@@ -1,0 +1,14 @@
+.claude/
+.tokensave/
+.dotnet/
+.nuget/
+.localappdata/
+.verify/
+target/
+NuGet.Config
+*.txt
+Tests/
+src/IncidentClusteringAnalyzer/obj/
+src/IncidentClusteringAnalyzer/bin/
+src/IncidentClusteringAnalyzer.Core/obj/
+src/IncidentClusteringAnalyzer.Core/bin/
