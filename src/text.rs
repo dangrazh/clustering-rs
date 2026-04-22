@@ -57,16 +57,13 @@ pub fn extract_features(records: &[IncidentRecord]) -> (Vec<TextFeatures>, TermI
     // Step 3: parallel document-frequency counting
     let document_frequency: HashMap<TermId, usize> = document_term_ids
         .par_iter()
-        .fold(
-            HashMap::new,
-            |mut acc: HashMap<TermId, usize>, (_, ids)| {
-                let unique: HashSet<TermId> = ids.iter().copied().collect();
-                for id in unique {
-                    *acc.entry(id).or_default() += 1;
-                }
-                acc
-            },
-        )
+        .fold(HashMap::new, |mut acc: HashMap<TermId, usize>, (_, ids)| {
+            let unique: HashSet<TermId> = ids.iter().copied().collect();
+            for id in unique {
+                *acc.entry(id).or_default() += 1;
+            }
+            acc
+        })
         .reduce(HashMap::new, |mut a, b| {
             for (id, count) in b {
                 *a.entry(id).or_default() += count;

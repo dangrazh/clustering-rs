@@ -26,13 +26,19 @@ pub struct IncidentClusteringApp {
     analysis: Option<AnalysisRun>,
     worker: Option<Receiver<WorkerMessage>>,
     current_progress: Option<ProgressUpdate>,
-    progress_log: Vec<ProgressUpdate>,
+    progress_log: Vec<ProgressLogEntry>,
     run_started_at: Option<Instant>,
     last_run_elapsed: Option<Duration>,
     results_tree_width: f32,
     status: String,
     worksheets: Vec<String>,
     selected_worksheet: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ProgressLogEntry {
+    elapsed: Duration,
+    update: ProgressUpdate,
 }
 
 impl Default for IncidentClusteringApp {
@@ -61,14 +67,18 @@ impl eframe::App for IncidentClusteringApp {
         self.poll_worker(ctx);
 
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.heading("Incident Clustering Analyzer");
-                ui.separator();
-                self.nav_button(ui, Screen::Import, "Import");
-                self.nav_button(ui, Screen::Mapping, "Mapping");
-                self.nav_button(ui, Screen::Run, "Run");
-                self.nav_button(ui, Screen::Results, "Results");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(source) = &self.source {
+                        ui.label(format!("{} rows", source.row_count()));
+                    }
+                });
             });
+            ui.add_space(4.0);
+            self.workflow_header(ui);
+            ui.add_space(4.0);
         });
 
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
@@ -97,16 +107,37 @@ impl eframe::App for IncidentClusteringApp {
 }
 
 impl IncidentClusteringApp {
-    fn nav_button(&mut self, ui: &mut egui::Ui, screen: Screen, label: &str) {
+    fn workflow_header(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            self.workflow_button(ui, Screen::Import, "1", "Source");
+            self.workflow_separator(ui);
+            self.workflow_button(ui, Screen::Mapping, "2", "Mapping");
+            self.workflow_separator(ui);
+            self.workflow_button(ui, Screen::Run, "3", "Analysis");
+            self.workflow_separator(ui);
+            self.workflow_button(ui, Screen::Results, "4", "Results");
+        });
+    }
+
+    fn workflow_separator(&self, ui: &mut egui::Ui) {
+        ui.label(">");
+    }
+
+    fn workflow_button(&mut self, ui: &mut egui::Ui, screen: Screen, number: &str, label: &str) {
         let enabled = match screen {
             Screen::Import => true,
             Screen::Mapping | Screen::Run => self.source.is_some(),
             Screen::Results => self.analysis.is_some(),
         };
+
+        let state = self.step_state(screen);
+        let text = format!("{number}  {label}  {state}");
         if ui
             .add_enabled(
                 enabled,
-                egui::Button::new(label).selected(self.screen == screen),
+                egui::Button::new(text)
+                    .selected(self.screen == screen)
+                    .min_size(egui::vec2(150.0, 32.0)),
             )
             .clicked()
         {
@@ -114,47 +145,106 @@ impl IncidentClusteringApp {
         }
     }
 
+    fn step_state(&self, screen: Screen) -> &'static str {
+        match screen {
+            Screen::Import if self.source.is_some() => "done",
+            Screen::Mapping if self.mapping_ready() => "done",
+            Screen::Run if self.worker.is_some() => "running",
+            Screen::Run if self.analysis.is_some() => "done",
+            Screen::Results if self.analysis.is_some() => "ready",
+            _ => "pending",
+        }
+    }
+
     fn import_screen(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Import");
-        ui.horizontal(|ui| {
-            if ui.button("Open CSV/XLSX").clicked() {
-                self.open_source_file();
-            }
-            if ui.button("Load Session").clicked() {
-                self.load_session();
-            }
+        screen_heading(ui, "1. Source file");
+
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .add_sized([160.0, 32.0], egui::Button::new("Open CSV/XLSX"))
+                    .clicked()
+                {
+                    self.open_source_file();
+                }
+                if ui
+                    .add_sized([140.0, 32.0], egui::Button::new("Load Session"))
+                    .clicked()
+                {
+                    self.load_session();
+                }
+            });
         });
 
-        if !self.worksheets.is_empty() {
-            ui.separator();
-            ui.label("Workbook worksheet");
-            let current = self
-                .selected_worksheet
-                .clone()
-                .unwrap_or_else(|| "Select worksheet".to_owned());
-            egui::ComboBox::from_id_salt("worksheet_select")
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    for sheet in self.worksheets.clone() {
-                        if ui
-                            .selectable_label(
-                                self.selected_worksheet.as_ref() == Some(&sheet),
-                                &sheet,
-                            )
-                            .clicked()
-                        {
-                            self.selected_worksheet = Some(sheet.clone());
-                            self.open_selected_worksheet();
-                        }
-                    }
-                });
+        if let Some(source) = &self.source {
+            ui.add_space(8.0);
+            summary_row(
+                ui,
+                &[
+                    ("Rows", source.row_count().to_string()),
+                    ("Columns", source.headers.len().to_string()),
+                    (
+                        "File",
+                        source
+                            .source_path
+                            .as_ref()
+                            .and_then(|path| path.file_name())
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("Loaded session")
+                            .to_owned(),
+                    ),
+                ],
+            );
         }
 
+        if !self.worksheets.is_empty() {
+            ui.add_space(8.0);
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong("Worksheet");
+                    let current = self
+                        .selected_worksheet
+                        .clone()
+                        .unwrap_or_else(|| "Select worksheet".to_owned());
+                    egui::ComboBox::from_id_salt("worksheet_select")
+                        .width(280.0)
+                        .selected_text(current)
+                        .show_ui(ui, |ui| {
+                            for sheet in self.worksheets.clone() {
+                                if ui
+                                    .selectable_label(
+                                        self.selected_worksheet.as_ref() == Some(&sheet),
+                                        &sheet,
+                                    )
+                                    .clicked()
+                                {
+                                    self.selected_worksheet = Some(sheet.clone());
+                                    self.open_selected_worksheet();
+                                }
+                            }
+                        });
+                });
+            });
+        }
+
+        ui.add_space(8.0);
         self.source_preview(ui);
+
+        if self.source.is_some() {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_sized([180.0, 34.0], egui::Button::new("Confirm Source"))
+                    .clicked()
+                {
+                    self.screen = Screen::Mapping;
+                }
+            });
+        }
     }
 
     fn mapping_screen(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Column Mapping");
+        screen_heading(ui, "2. Field mapping");
         let Some(source) = &self.source else {
             ui.label("No source file loaded.");
             return;
@@ -162,50 +252,90 @@ impl IncidentClusteringApp {
         let headers = source.headers.clone();
         let source_for_validation = source.clone();
 
-        column_combo(
+        summary_row(
             ui,
-            "Incident number",
-            &headers,
-            &mut self.mapping.incident_number,
+            &[
+                ("Required", self.required_mapping_status()),
+                (
+                    "Additional text",
+                    self.mapping.additional_text.len().to_string(),
+                ),
+                ("Filters", self.filter_mapping_count().to_string()),
+            ],
         );
-        column_combo(
-            ui,
-            "Short description",
-            &headers,
-            &mut self.mapping.short_description,
-        );
-        column_combo(
-            ui,
-            "Assignment group",
-            &headers,
-            &mut self.mapping.assignment_group,
-        );
-        column_combo(ui, "Service", &headers, &mut self.mapping.service);
-        column_combo(ui, "Category", &headers, &mut self.mapping.category);
-        column_combo(
-            ui,
-            "Configuration item",
-            &headers,
-            &mut self.mapping.configuration_item,
-        );
-        column_combo(ui, "Date", &headers, &mut self.mapping.date);
 
-        ui.separator();
-        ui.label("Additional text columns");
-        for (index, header) in headers.iter().enumerate() {
-            let mut selected = self.mapping.additional_text.contains(&index);
-            if ui.checkbox(&mut selected, header).changed() {
-                if selected {
-                    self.mapping.additional_text.push(index);
-                    self.mapping.additional_text.sort_unstable();
-                    self.mapping.additional_text.dedup();
-                } else {
-                    self.mapping.additional_text.retain(|value| *value != index);
-                }
-            }
-        }
+        ui.add_space(8.0);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.strong("Required fields");
+            ui.add_space(4.0);
+            egui::Grid::new("required_mapping_grid")
+                .num_columns(2)
+                .spacing([24.0, 8.0])
+                .show(ui, |ui| {
+                    column_combo_row(
+                        ui,
+                        "Incident number",
+                        &headers,
+                        &mut self.mapping.incident_number,
+                    );
+                    column_combo_row(
+                        ui,
+                        "Short description",
+                        &headers,
+                        &mut self.mapping.short_description,
+                    );
+                });
+        });
 
-        ui.separator();
+        ui.add_space(8.0);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.strong("Filter and context fields");
+            ui.add_space(4.0);
+            egui::Grid::new("filter_mapping_grid")
+                .num_columns(2)
+                .spacing([24.0, 8.0])
+                .show(ui, |ui| {
+                    column_combo_row(
+                        ui,
+                        "Assignment group",
+                        &headers,
+                        &mut self.mapping.assignment_group,
+                    );
+                    column_combo_row(ui, "Service", &headers, &mut self.mapping.service);
+                    column_combo_row(ui, "Category", &headers, &mut self.mapping.category);
+                    column_combo_row(
+                        ui,
+                        "Configuration item",
+                        &headers,
+                        &mut self.mapping.configuration_item,
+                    );
+                    column_combo_row(ui, "Date", &headers, &mut self.mapping.date);
+                });
+        });
+
+        ui.add_space(8.0);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.strong("Additional text for similarity");
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical()
+                .max_height(160.0)
+                .show(ui, |ui| {
+                    for (index, header) in headers.iter().enumerate() {
+                        let mut selected = self.mapping.additional_text.contains(&index);
+                        if ui.checkbox(&mut selected, header).changed() {
+                            if selected {
+                                self.mapping.additional_text.push(index);
+                                self.mapping.additional_text.sort_unstable();
+                                self.mapping.additional_text.dedup();
+                            } else {
+                                self.mapping.additional_text.retain(|value| *value != index);
+                            }
+                        }
+                    }
+                });
+        });
+
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button("Save Mapping").clicked() {
                 self.save_mapping();
@@ -213,7 +343,14 @@ impl IncidentClusteringApp {
             if ui.button("Load Mapping").clicked() {
                 self.load_mapping();
             }
-            if ui.button("Continue").clicked() {
+            ui.separator();
+            if ui
+                .add_enabled(
+                    self.mapping_ready(),
+                    egui::Button::new("Confirm Mapping").min_size(egui::vec2(170.0, 34.0)),
+                )
+                .clicked()
+            {
                 match validate_mapping(&self.mapping, &source_for_validation) {
                     Ok(()) => self.screen = Screen::Run,
                     Err(err) => self.status = err.to_string(),
@@ -223,36 +360,61 @@ impl IncidentClusteringApp {
     }
 
     fn run_screen(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Run Analysis");
+        screen_heading(ui, "3. Run analysis");
         if self.worker.is_some() {
-            ui.spinner();
             self.progress_view(ui);
             return;
         }
 
-        ui.add(
-            egui::Slider::new(&mut self.settings.minimum_cluster_size, 2..=1000)
-                .text("Minimum useful cluster size"),
-        );
-        ui.add(
-            egui::Slider::new(&mut self.settings.similarity_threshold_percent, 10..=90)
-                .text("Cluster similarity threshold"),
-        );
-        ui.add(
-            egui::Slider::new(
-                &mut self.settings.subgroup_similarity_threshold_percent,
-                10..=95,
-            )
-            .text("Subgroup similarity threshold"),
-        );
+        if let Some(source) = &self.source {
+            summary_row(
+                ui,
+                &[
+                    ("Source rows", source.row_count().to_string()),
+                    ("Mapped fields", self.mapped_field_count().to_string()),
+                    (
+                        "Minimum cluster size",
+                        self.settings.minimum_cluster_size.to_string(),
+                    ),
+                ],
+            );
+        }
 
-        if ui.button("Start Clustering").clicked() {
+        ui.add_space(8.0);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.strong("Analysis settings");
+            ui.add_space(4.0);
+            ui.add(
+                egui::Slider::new(&mut self.settings.minimum_cluster_size, 2..=1000)
+                    .text("Minimum useful cluster size"),
+            );
+            ui.add(
+                egui::Slider::new(&mut self.settings.similarity_threshold_percent, 10..=90)
+                    .text("Cluster similarity threshold"),
+            );
+            ui.add(
+                egui::Slider::new(
+                    &mut self.settings.subgroup_similarity_threshold_percent,
+                    10..=95,
+                )
+                .text("Subgroup similarity threshold"),
+            );
+        });
+
+        ui.add_space(8.0);
+        if ui
+            .add_sized(
+                [180.0, 36.0],
+                egui::Button::new("Start Analysis").selected(false),
+            )
+            .clicked()
+        {
             self.start_analysis();
         }
     }
 
     fn results_screen(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Results");
+        screen_heading(ui, "4. Explore results");
         let Some(analysis) = &self.analysis else {
             ui.label("No analysis results available.");
             return;
@@ -262,36 +424,48 @@ impl IncidentClusteringApp {
         let cluster_count = analysis.clusters.len();
         let unclustered_count = analysis.unclustered_row_indices.len();
 
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!("{processed_count} processed incidents"));
-            ui.label(format!("{ignored_count} ignored rows"));
-            ui.label(format!("{cluster_count} clusters"));
-            ui.label(format!("{unclustered_count} unclustered incidents"));
-        });
+        summary_row(
+            ui,
+            &[
+                ("Processed", processed_count.to_string()),
+                ("Ignored", ignored_count.to_string()),
+                ("Clusters", cluster_count.to_string()),
+                ("Unclustered", unclustered_count.to_string()),
+            ],
+        );
 
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button("Export Excel").clicked() {
+            if ui
+                .add_sized([130.0, 32.0], egui::Button::new("Export Excel"))
+                .clicked()
+            {
                 self.export_results();
             }
-            if ui.button("Save Session").clicked() {
+            if ui
+                .add_sized([130.0, 32.0], egui::Button::new("Save Session"))
+                .clicked()
+            {
                 self.save_session();
             }
         });
 
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Tree width");
-            ui.add(
-                egui::Slider::new(&mut self.results_tree_width, 800.0..=4_000.0)
-                    .suffix(" px")
-                    .clamping(egui::SliderClamping::Always),
-            );
-            if ui.button("Reset").clicked() {
-                self.results_tree_width = 1_400.0;
-            }
+        ui.add_space(8.0);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Tree width");
+                ui.add(
+                    egui::Slider::new(&mut self.results_tree_width, 800.0..=4_000.0)
+                        .suffix(" px")
+                        .clamping(egui::SliderClamping::Always),
+                );
+                if ui.button("Reset").clicked() {
+                    self.results_tree_width = 1_400.0;
+                }
+            });
         });
 
-        ui.separator();
+        ui.add_space(8.0);
         let Some(analysis) = &self.analysis else {
             return;
         };
@@ -474,7 +648,13 @@ impl IncidentClusteringApp {
                 WorkerMessage::Progress(progress) => {
                     self.status = format!("{}: {}", progress.stage, progress.detail);
                     self.current_progress = Some(progress.clone());
-                    self.progress_log.push(progress);
+                    self.progress_log.push(ProgressLogEntry {
+                        elapsed: self
+                            .run_started_at
+                            .map(|started_at| started_at.elapsed())
+                            .unwrap_or_default(),
+                        update: progress,
+                    });
                     if self.progress_log.len() > 12 {
                         self.progress_log.remove(0);
                     }
@@ -602,26 +782,64 @@ impl IncidentClusteringApp {
             return;
         };
 
-        ui.separator();
-        ui.heading(&progress.stage);
-        ui.label(&progress.detail);
-        ui.add(egui::ProgressBar::new(progress.fraction()).text(format!(
-            "Step {} of {}",
-            progress.step, progress.total_steps
-        )));
+        let elapsed = self
+            .run_started_at
+            .map(|started_at| started_at.elapsed())
+            .unwrap_or_default();
 
-        ui.separator();
-        ui.label("Pipeline activity");
-        egui::ScrollArea::vertical()
-            .max_height(220.0)
-            .show(ui, |ui| {
-                for entry in self.progress_log.iter().rev() {
-                    ui.label(format!(
-                        "{}/{} - {}: {}",
-                        entry.step, entry.total_steps, entry.stage, entry.detail
-                    ));
-                }
+        summary_row(
+            ui,
+            &[
+                ("Current stage", progress.stage.clone()),
+                (
+                    "Step",
+                    format!("{} of {}", progress.step, progress.total_steps),
+                ),
+                ("Elapsed", format_duration(elapsed)),
+            ],
+        );
+
+        ui.add_space(8.0);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.heading(&progress.stage);
             });
+            ui.label(&progress.detail);
+            ui.add_space(4.0);
+            ui.add(
+                egui::ProgressBar::new(progress.fraction())
+                    .desired_width(ui.available_width())
+                    .text(format!("{}%", (progress.fraction() * 100.0).round() as u8)),
+            );
+        });
+
+        ui.add_space(8.0);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.strong("Pipeline activity");
+            ui.add_space(4.0);
+            egui::Grid::new("pipeline_activity_grid")
+                .num_columns(4)
+                .striped(true)
+                .spacing([16.0, 6.0])
+                .show(ui, |ui| {
+                    ui.strong("Time");
+                    ui.strong("Step");
+                    ui.strong("Stage");
+                    ui.strong("Detail");
+                    ui.end_row();
+                    for entry in self.progress_log.iter().rev() {
+                        ui.label(format_duration(entry.elapsed));
+                        ui.label(format!(
+                            "{}/{}",
+                            entry.update.step, entry.update.total_steps
+                        ));
+                        ui.label(&entry.update.stage);
+                        ui.label(&entry.update.detail);
+                        ui.end_row();
+                    }
+                });
+        });
     }
 
     fn finish_run_timer(&mut self) -> Duration {
@@ -634,23 +852,87 @@ impl IncidentClusteringApp {
         self.last_run_elapsed = Some(elapsed);
         elapsed
     }
+
+    fn mapping_ready(&self) -> bool {
+        self.mapping.incident_number.is_some() && self.mapping.short_description.is_some()
+    }
+
+    fn required_mapping_status(&self) -> String {
+        if self.mapping_ready() {
+            "2 of 2".to_owned()
+        } else {
+            let mapped = [self.mapping.incident_number, self.mapping.short_description]
+                .into_iter()
+                .flatten()
+                .count();
+            format!("{mapped} of 2")
+        }
+    }
+
+    fn filter_mapping_count(&self) -> usize {
+        [
+            self.mapping.assignment_group,
+            self.mapping.service,
+            self.mapping.category,
+            self.mapping.configuration_item,
+            self.mapping.date,
+        ]
+        .into_iter()
+        .flatten()
+        .count()
+    }
+
+    fn mapped_field_count(&self) -> usize {
+        self.filter_mapping_count()
+            + self.mapping.additional_text.len()
+            + [self.mapping.incident_number, self.mapping.short_description]
+                .into_iter()
+                .flatten()
+                .count()
+    }
 }
 
-fn column_combo(ui: &mut egui::Ui, label: &str, headers: &[String], selected: &mut Option<usize>) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        let selected_text = selected
-            .and_then(|index| headers.get(index))
-            .map(String::as_str)
-            .unwrap_or("Not mapped");
-        egui::ComboBox::from_id_salt(label)
-            .selected_text(selected_text)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(selected, None, "Not mapped");
-                for (index, header) in headers.iter().enumerate() {
-                    ui.selectable_value(selected, Some(index), header);
-                }
+fn column_combo_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    headers: &[String],
+    selected: &mut Option<usize>,
+) {
+    ui.label(label);
+    let selected_text = selected
+        .and_then(|index| headers.get(index))
+        .map(String::as_str)
+        .unwrap_or("Not mapped");
+    egui::ComboBox::from_id_salt(label)
+        .width(320.0)
+        .selected_text(selected_text)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(selected, None, "Not mapped");
+            for (index, header) in headers.iter().enumerate() {
+                ui.selectable_value(selected, Some(index), header);
+            }
+        });
+    ui.end_row();
+}
+
+fn screen_heading(ui: &mut egui::Ui, title: &str) {
+    ui.heading(title);
+    ui.add_space(8.0);
+}
+
+fn summary_row(ui: &mut egui::Ui, items: &[(&str, String)]) {
+    ui.horizontal_wrapped(|ui| {
+        for (label, value) in items {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_min_width(130.0);
+                ui.label(
+                    egui::RichText::new(*label)
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.strong(value);
             });
+        }
     });
 }
 

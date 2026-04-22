@@ -1,7 +1,5 @@
 use crate::labels::summarize_cluster;
-use crate::model::{
-    Cluster, ClusterId, IncidentRecord, RowIndex, RunSettings, Subgroup, TermId,
-};
+use crate::model::{Cluster, ClusterId, IncidentRecord, RowIndex, RunSettings, Subgroup, TermId};
 use crate::text::extract_features;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -28,15 +26,9 @@ pub fn cluster_incidents(
 
     progress(
         "Building similarity graph",
-        format!(
-            "Finding similar pairs among {} incidents",
-            features.len()
-        ),
+        format!("Finding similar pairs among {} incidents", features.len()),
     );
-    let edges = build_edges_from_shared_counts(
-        &features,
-        settings.similarity_threshold_percent,
-    );
+    let edges = build_edges_from_shared_counts(&features, settings.similarity_threshold_percent);
 
     progress(
         "Building primary clusters",
@@ -192,10 +184,8 @@ fn build_subgroups(
         .cloned()
         .collect::<Vec<_>>();
     let (features, _term_index) = extract_features(&cluster_records);
-    let edges = build_edges_from_shared_counts(
-        &features,
-        settings.subgroup_similarity_threshold_percent,
-    );
+    let edges =
+        build_edges_from_shared_counts(&features, settings.subgroup_similarity_threshold_percent);
 
     let mut dsu = DisjointSet::new(rows.iter().copied());
     for (left, right) in edges {
