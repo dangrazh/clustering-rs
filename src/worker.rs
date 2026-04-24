@@ -1,5 +1,6 @@
 use crate::clustering::{cluster_incidents, unclustered_rows};
 use crate::model::{AnalysisRun, ColumnMapping, RunSettings, SourceTable, TimingMetrics};
+use crate::progress::{ProgressReporter, ProgressUpdate};
 use crate::schema::build_records;
 use anyhow::Result;
 use std::sync::mpsc::{self, Receiver};
@@ -13,38 +14,6 @@ pub enum WorkerMessage {
     Finished(Result<Box<AnalysisRun>>),
 }
 
-#[derive(Debug, Clone)]
-pub struct ProgressUpdate {
-    pub step: usize,
-    pub total_steps: usize,
-    pub stage: String,
-    pub detail: String,
-}
-
-impl ProgressUpdate {
-    pub fn new(
-        step: usize,
-        total_steps: usize,
-        stage: impl Into<String>,
-        detail: impl Into<String>,
-    ) -> Self {
-        Self {
-            step,
-            total_steps,
-            stage: stage.into(),
-            detail: detail.into(),
-        }
-    }
-
-    pub fn fraction(&self) -> f32 {
-        if self.total_steps == 0 {
-            0.0
-        } else {
-            self.step as f32 / self.total_steps as f32
-        }
-    }
-}
-
 pub fn spawn_analysis(
     source: SourceTable,
     mapping: ColumnMapping,
@@ -54,7 +23,7 @@ pub fn spawn_analysis(
     thread::spawn(move || {
         let _ = sender.send(WorkerMessage::Started);
         let progress_sender = sender.clone();
-        let result = run_analysis_with_progress(source, mapping, settings, |progress| {
+        let result = run_analysis_with_progress(source, mapping, settings, move |progress| {
             let _ = progress_sender.send(WorkerMessage::Progress(progress));
         })
         .map(Box::new);
@@ -75,57 +44,66 @@ pub fn run_analysis_with_progress(
     source: SourceTable,
     mapping: ColumnMapping,
     settings: RunSettings,
-    mut progress: impl FnMut(ProgressUpdate),
+    progress: impl Fn(ProgressUpdate) + Send + Sync + 'static,
 ) -> Result<AnalysisRun> {
     const TOTAL_STEPS: usize = 8;
-    progress(ProgressUpdate::new(
+    let reporter = ProgressReporter::new(progress);
+
+    reporter.substep(
         1,
         TOTAL_STEPS,
         "Validating column mapping",
+        1,
+        2,
+        "Checking required fields",
         format!("{} source rows available", source.row_count()),
-    ));
+    );
+    reporter.substep(
+        1,
+        TOTAL_STEPS,
+        "Validating column mapping",
+        2,
+        2,
+        "Verifying mapped column indices",
+        format!("{} mapped columns selected", mapped_column_count(&mapping)),
+    );
 
     let preprocessing_start = Instant::now();
-    progress(ProgressUpdate::new(
-        2,
-        TOTAL_STEPS,
-        "Building incident records",
-        "Checking mandatory fields and collecting selected text fields",
-    ));
-    let (processed_incidents, ignored_rows) = build_records(&source, &mapping)?;
+    let (processed_incidents, ignored_rows) = build_records(&source, &mapping, Some(&reporter))?;
     let preprocessing_ms = preprocessing_start.elapsed().as_millis();
 
     let clustering_start = Instant::now();
-    let mut clustering_step = 3;
-    let clusters = cluster_incidents(&processed_incidents, &settings, |stage, detail| {
-        progress(ProgressUpdate::new(
-            clustering_step.min(7),
-            TOTAL_STEPS,
-            stage,
-            detail,
-        ));
-        clustering_step += 1;
-    });
+    let clusters = cluster_incidents(&processed_incidents, &settings, Some(&reporter));
     let clustering_ms = clustering_start.elapsed().as_millis();
-    progress(ProgressUpdate::new(
-        7,
-        TOTAL_STEPS,
-        "Assigning unclustered incidents",
-        "Collecting processed rows that did not meet cluster thresholds",
-    ));
-    let unclustered_row_indices = unclustered_rows(&processed_incidents, &clusters);
+    let unclustered_row_indices = unclustered_rows(&processed_incidents, &clusters, Some(&reporter));
 
-    progress(ProgressUpdate::new(
+    reporter.substep(
         8,
         TOTAL_STEPS,
         "Finalizing analysis",
+        1,
+        2,
+        "Assembling analysis package",
+        format!(
+            "Preparing run with {} processed incidents and {} clusters",
+            processed_incidents.len(),
+            clusters.len()
+        ),
+    );
+    reporter.substep(
+        8,
+        TOTAL_STEPS,
+        "Finalizing analysis",
+        2,
+        2,
+        "Publishing results",
         format!(
             "{} clusters, {} unclustered incidents, {} ignored rows",
             clusters.len(),
             unclustered_row_indices.len(),
             ignored_rows.len()
         ),
-    ));
+    );
 
     Ok(AnalysisRun {
         source,
@@ -141,4 +119,20 @@ pub fn run_analysis_with_progress(
             ..Default::default()
         },
     })
+}
+
+fn mapped_column_count(mapping: &ColumnMapping) -> usize {
+    mapping.additional_text.len()
+        + [
+            mapping.incident_number,
+            mapping.short_description,
+            mapping.assignment_group,
+            mapping.service,
+            mapping.category,
+            mapping.configuration_item,
+            mapping.date,
+        ]
+        .into_iter()
+        .flatten()
+        .count()
 }

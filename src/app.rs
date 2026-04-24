@@ -1,10 +1,11 @@
 use crate::io::{export_analysis, import_source, import_xlsx_sheet, list_worksheets};
 use crate::model::{AnalysisRun, ColumnMapping, RunSettings, SourceTable};
+use crate::progress::ProgressUpdate;
 use crate::schema::{suggest_mapping, validate_mapping};
 use crate::session::{
     load_analysis_session, load_mapping_profile, save_analysis_session, save_mapping_profile,
 };
-use crate::worker::{spawn_analysis, ProgressUpdate, WorkerMessage};
+use crate::worker::{spawn_analysis, WorkerMessage};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -655,7 +656,7 @@ impl IncidentClusteringApp {
                             .unwrap_or_default(),
                         update: progress,
                     });
-                    if self.progress_log.len() > 12 {
+                    if self.progress_log.len() > 40 {
                         self.progress_log.remove(0);
                     }
                 }
@@ -792,8 +793,16 @@ impl IncidentClusteringApp {
             &[
                 ("Current stage", progress.stage.clone()),
                 (
-                    "Step",
+                    "Main step",
                     format!("{} of {}", progress.step, progress.total_steps),
+                ),
+                (
+                    "Sub-step",
+                    progress
+                        .substep
+                        .as_ref()
+                        .map(|substep| format!("{} of {}", substep.current, substep.total))
+                        .unwrap_or_else(|| "-".to_owned()),
                 ),
                 ("Elapsed", format_duration(elapsed)),
             ],
@@ -805,6 +814,12 @@ impl IncidentClusteringApp {
                 ui.spinner();
                 ui.heading(&progress.stage);
             });
+            if let Some(substep) = &progress.substep {
+                ui.label(format!(
+                    "Sub-step {} of {}: {}",
+                    substep.current, substep.total, substep.label
+                ));
+            }
             ui.label(&progress.detail);
             ui.add_space(4.0);
             ui.add(
@@ -814,17 +829,48 @@ impl IncidentClusteringApp {
             );
         });
 
+        if !progress.workers.is_empty() {
+            ui.add_space(8.0);
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.strong("Parallel workers");
+                ui.add_space(4.0);
+                egui::Grid::new("parallel_worker_grid")
+                    .num_columns(4)
+                    .striped(true)
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.strong("Worker");
+                        ui.strong("Processed");
+                        ui.strong("Share");
+                        ui.strong("Bar");
+                        ui.end_row();
+                        for worker in &progress.workers {
+                            ui.label(format!("#{}", worker.worker));
+                            ui.label(format!("{}/{}", worker.completed, worker.total));
+                            ui.label(format!("{:.0}%", worker.fraction() * 100.0));
+                            ui.add(
+                                egui::ProgressBar::new(worker.fraction())
+                                    .desired_width(180.0)
+                                    .show_percentage(),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            });
+        }
+
         ui.add_space(8.0);
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.strong("Pipeline activity");
             ui.add_space(4.0);
             egui::Grid::new("pipeline_activity_grid")
-                .num_columns(4)
+                .num_columns(5)
                 .striped(true)
                 .spacing([16.0, 6.0])
                 .show(ui, |ui| {
                     ui.strong("Time");
-                    ui.strong("Step");
+                    ui.strong("Main");
+                    ui.strong("Sub");
                     ui.strong("Stage");
                     ui.strong("Detail");
                     ui.end_row();
@@ -834,6 +880,13 @@ impl IncidentClusteringApp {
                             "{}/{}",
                             entry.update.step, entry.update.total_steps
                         ));
+                        ui.label(
+                            entry.update
+                                .substep
+                                .as_ref()
+                                .map(|substep| format!("{}/{}", substep.current, substep.total))
+                                .unwrap_or_else(|| "-".to_owned()),
+                        );
                         ui.label(&entry.update.stage);
                         ui.label(&entry.update.detail);
                         ui.end_row();

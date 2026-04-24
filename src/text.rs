@@ -1,4 +1,5 @@
 use crate::model::{IncidentRecord, RowIndex, TermId, TextFeatures};
+use crate::progress::{ParallelProgressSpec, ProgressReporter};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -30,19 +31,65 @@ impl TermIndex {
 /// Extracts sparse TF-IDF feature vectors for all records.
 ///
 /// Returns the feature vectors and the term index used to map term strings to IDs.
-pub fn extract_features(records: &[IncidentRecord]) -> (Vec<TextFeatures>, TermIndex) {
+pub fn extract_features(
+    records: &[IncidentRecord],
+    reporter: Option<&ProgressReporter>,
+) -> (Vec<TextFeatures>, TermIndex) {
+    if let Some(reporter) = reporter {
+        reporter.substep(
+            3,
+            8,
+            "Extracting text features",
+            1,
+            4,
+            "Preparing tokenizer input",
+            format!("Vectorizing {} processed incidents", records.len()),
+        );
+    }
+
     // Step 1: tokenize all documents in parallel (produces String terms)
+    let token_tracker = reporter.map(|reporter| {
+        reporter.parallel_substep(ParallelProgressSpec {
+            step: 3,
+            total_steps: 8,
+            stage: "Extracting text features".to_owned(),
+            substep_current: 2,
+            substep_total: 4,
+            substep_label: "Tokenizing incident text".to_owned(),
+            detail: "Generating word, phrase, and character terms".to_owned(),
+            total_units: records.len(),
+            unit_label: "incidents tokenized".to_owned(),
+        })
+    });
     let document_tokens: Vec<(RowIndex, Vec<String>)> = records
         .par_iter()
         .map(|record| {
-            (
+            let tokens = (
                 record.source_row_index,
                 feature_terms(&record.analysis_text),
-            )
+            );
+            if let Some(tracker) = &token_tracker {
+                tracker.advance(1);
+            }
+            tokens
         })
         .collect();
+    if let Some(tracker) = &token_tracker {
+        tracker.finish();
+    }
 
     // Step 2: build term index (sequential — populates the ID map)
+    if let Some(reporter) = reporter {
+        reporter.substep(
+            3,
+            8,
+            "Extracting text features",
+            3,
+            4,
+            "Assigning term identifiers",
+            format!("Indexing {} tokenized incidents", document_tokens.len()),
+        );
+    }
     let mut term_index = TermIndex::new();
     let document_term_ids: Vec<(RowIndex, Vec<TermId>)> = document_tokens
         .into_iter()
@@ -55,6 +102,19 @@ pub fn extract_features(records: &[IncidentRecord]) -> (Vec<TextFeatures>, TermI
         })
         .collect();
     // Step 3: parallel document-frequency counting
+    let frequency_tracker = reporter.map(|reporter| {
+        reporter.parallel_substep(ParallelProgressSpec {
+            step: 3,
+            total_steps: 8,
+            stage: "Extracting text features".to_owned(),
+            substep_current: 4,
+            substep_total: 4,
+            substep_label: "Calculating TF-IDF weights".to_owned(),
+            detail: "Counting document frequencies and weighting terms".to_owned(),
+            total_units: document_term_ids.len(),
+            unit_label: "documents weighted".to_owned(),
+        })
+    });
     let document_frequency: HashMap<TermId, usize> = document_term_ids
         .par_iter()
         .fold(HashMap::new, |mut acc: HashMap<TermId, usize>, (_, ids)| {
@@ -90,9 +150,17 @@ pub fn extract_features(records: &[IncidentRecord]) -> (Vec<TextFeatures>, TermI
                 })
                 .collect::<BTreeMap<_, _>>();
 
+            if let Some(tracker) = &frequency_tracker {
+                tracker.advance(1);
+            }
+
             TextFeatures { row_index, terms }
         })
         .collect();
+
+    if let Some(tracker) = &frequency_tracker {
+        tracker.finish();
+    }
 
     (features, term_index)
 }

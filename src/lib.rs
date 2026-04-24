@@ -3,6 +3,7 @@ pub mod clustering;
 pub mod io;
 pub mod labels;
 pub mod model;
+pub mod progress;
 pub mod schema;
 pub mod session;
 pub mod text;

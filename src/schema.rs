@@ -1,6 +1,7 @@
 use crate::model::{
     ColumnIndex, ColumnMapping, FilterValues, IgnoredRow, IncidentRecord, SourceTable,
 };
+use crate::progress::{ParallelProgressSpec, ProgressReporter};
 use chrono::NaiveDate;
 use rayon::prelude::*;
 use thiserror::Error;
@@ -73,6 +74,7 @@ pub fn validate_mapping(mapping: &ColumnMapping, table: &SourceTable) -> Result<
 pub fn build_records(
     table: &SourceTable,
     mapping: &ColumnMapping,
+    reporter: Option<&ProgressReporter>,
 ) -> Result<(Vec<IncidentRecord>, Vec<IgnoredRow>), MappingError> {
     validate_mapping(mapping, table)?;
     let incident_number_index = mapping.incident_number.expect("validated incident number");
@@ -80,20 +82,66 @@ pub fn build_records(
         .short_description
         .expect("validated short description");
 
+    if let Some(reporter) = reporter {
+        reporter.substep(
+            2,
+            8,
+            "Building incident records",
+            1,
+            3,
+            "Preparing row builders",
+            format!("{} source rows queued", table.rows.len()),
+        );
+    }
+
+    let row_tracker = reporter.map(|reporter| {
+        reporter.parallel_substep(ParallelProgressSpec {
+            step: 2,
+            total_steps: 8,
+            stage: "Building incident records".to_owned(),
+            substep_current: 2,
+            substep_total: 3,
+            substep_label: "Processing source rows".to_owned(),
+            detail: "Checking mandatory fields and composing incident text".to_owned(),
+            total_units: table.rows.len(),
+            unit_label: "rows processed".to_owned(),
+        })
+    });
+
     let row_results = table
         .rows
         .par_iter()
         .enumerate()
         .map(|(source_row_index, row)| {
-            build_row_result(
+            let result = build_row_result(
                 source_row_index,
                 row,
                 mapping,
                 incident_number_index,
                 short_description_index,
-            )
+            );
+            if let Some(tracker) = &row_tracker {
+                tracker.advance(1);
+            }
+            result
         })
         .collect::<Vec<_>>();
+
+    if let Some(tracker) = &row_tracker {
+        tracker.finish();
+    }
+
+    if let Some(reporter) = reporter {
+        reporter.substep(
+            2,
+            8,
+            "Building incident records",
+            3,
+            3,
+            "Separating valid and ignored rows",
+            "Consolidating parallel row-build output",
+        );
+    }
 
     let mut records = Vec::with_capacity(table.rows.len());
     let mut ignored = Vec::new();
@@ -219,7 +267,7 @@ mod tests {
         };
         let mapping = suggest_mapping(&table.headers);
 
-        let (records, ignored) = build_records(&table, &mapping).unwrap();
+        let (records, ignored) = build_records(&table, &mapping, None).unwrap();
 
         assert_eq!(records.len(), 1);
         assert_eq!(ignored.len(), 2);
