@@ -75,7 +75,8 @@ pub fn run_analysis_with_progress(
     let clustering_start = Instant::now();
     let clusters = cluster_incidents(&processed_incidents, &settings, Some(&reporter));
     let clustering_ms = clustering_start.elapsed().as_millis();
-    let unclustered_row_indices = unclustered_rows(&processed_incidents, &clusters, Some(&reporter));
+    let unclustered_row_indices =
+        unclustered_rows(&processed_incidents, &clusters, Some(&reporter));
 
     reporter.substep(
         8,

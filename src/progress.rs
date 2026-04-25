@@ -62,12 +62,7 @@ impl ProgressUpdate {
         }
     }
 
-    pub fn with_substep(
-        mut self,
-        current: usize,
-        total: usize,
-        label: impl Into<String>,
-    ) -> Self {
+    pub fn with_substep(mut self, current: usize, total: usize, label: impl Into<String>) -> Self {
         self.substep = Some(SubstepProgress {
             current,
             total,
@@ -145,16 +140,15 @@ impl ProgressReporter {
         );
     }
 
-    pub fn parallel_substep(
-        &self,
-        spec: ParallelProgressSpec,
-    ) -> ParallelProgressTracker {
+    pub fn parallel_substep(&self, spec: ParallelProgressSpec) -> ParallelProgressTracker {
         let worker_count = rayon::current_num_threads().max(1);
+        let worker_totals = distributed_worker_totals(spec.total_units, worker_count);
         let tracker = ParallelProgressTracker {
             inner: Arc::new(ParallelProgressState {
                 reporter: self.clone(),
                 spec,
                 worker_progress: (0..worker_count).map(|_| AtomicUsize::new(0)).collect(),
+                worker_totals,
                 total_completed: AtomicUsize::new(0),
                 last_bucket: AtomicUsize::new(0),
             }),
@@ -186,6 +180,7 @@ struct ParallelProgressState {
     reporter: ProgressReporter,
     spec: ParallelProgressSpec,
     worker_progress: Vec<AtomicUsize>,
+    worker_totals: Vec<usize>,
     total_completed: AtomicUsize,
     last_bucket: AtomicUsize,
 }
@@ -201,7 +196,10 @@ impl ParallelProgressTracker {
             .min(self.inner.worker_progress.len().saturating_sub(1));
         self.inner.worker_progress[worker_index].fetch_add(units, Ordering::Relaxed);
 
-        let previous = self.inner.total_completed.fetch_add(units, Ordering::Relaxed);
+        let previous = self
+            .inner
+            .total_completed
+            .fetch_add(units, Ordering::Relaxed);
         let completed = (previous + units).min(self.inner.spec.total_units);
         let bucket = completed.saturating_mul(100) / self.inner.spec.total_units.max(1);
         let last_bucket = self.inner.last_bucket.load(Ordering::Relaxed);
@@ -229,9 +227,12 @@ impl ParallelProgressTracker {
             .enumerate()
             .map(|(index, progress)| WorkerProgress {
                 worker: index + 1,
-                completed: progress.load(Ordering::Relaxed).min(spec.total_units),
-                total: spec.total_units,
+                completed: progress
+                    .load(Ordering::Relaxed)
+                    .min(self.inner.worker_totals[index]),
+                total: self.inner.worker_totals[index],
             })
+            .filter(|worker| worker.total > 0)
             .collect();
 
         self.inner.reporter.emit(
@@ -251,5 +252,38 @@ impl ParallelProgressTracker {
             )
             .with_workers(workers),
         );
+    }
+}
+
+fn distributed_worker_totals(total_units: usize, worker_count: usize) -> Vec<usize> {
+    if worker_count == 0 {
+        return Vec::new();
+    }
+
+    let base = total_units / worker_count;
+    let remainder = total_units % worker_count;
+
+    (0..worker_count)
+        .map(|index| base + usize::from(index < remainder))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::distributed_worker_totals;
+
+    #[test]
+    fn distributes_totals_evenly_across_workers() {
+        assert_eq!(distributed_worker_totals(12, 4), vec![3, 3, 3, 3]);
+    }
+
+    #[test]
+    fn distributes_remainder_to_first_workers() {
+        assert_eq!(distributed_worker_totals(10, 4), vec![3, 3, 2, 2]);
+    }
+
+    #[test]
+    fn handles_more_workers_than_units() {
+        assert_eq!(distributed_worker_totals(3, 5), vec![1, 1, 1, 0, 0]);
     }
 }

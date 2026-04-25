@@ -335,7 +335,10 @@ fn build_edges_from_shared_counts(
             4,
             5,
             "Applying similarity threshold",
-            format!("{} similarity edges retained after row-local scoring", edges.len()),
+            format!(
+                "{} similarity edges retained after row-local scoring",
+                edges.len()
+            ),
         );
     }
 
@@ -347,7 +350,10 @@ fn build_edges_from_shared_counts(
             5,
             5,
             "Finalizing similarity edges",
-            format!("{} filtered posting lists contributed to graph construction", posting_lists.len()),
+            format!(
+                "{} filtered posting lists contributed to graph construction",
+                posting_lists.len()
+            ),
         );
     }
 

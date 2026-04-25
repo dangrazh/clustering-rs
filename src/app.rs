@@ -492,18 +492,12 @@ impl IncidentClusteringApp {
                                 subgroup.size()
                             ))
                             .show(ui, |ui| {
-                                for row_index in subgroup.incident_row_indices.iter().take(250) {
-                                    if let Some(record) = analysis
-                                        .processed_incidents
-                                        .iter()
-                                        .find(|record| record.source_row_index == *row_index)
-                                    {
-                                        ui.label(format!(
-                                            "{}: {}",
-                                            record.incident_number, record.analysis_text
-                                        ));
-                                    }
-                                }
+                                self.result_rows_table(
+                                    ui,
+                                    &analysis.source.headers,
+                                    &analysis.source.rows,
+                                    &subgroup.incident_row_indices,
+                                );
                             });
                         }
                     });
@@ -539,6 +533,41 @@ impl IncidentClusteringApp {
                     }
                 });
         });
+    }
+
+    fn result_rows_table(
+        &self,
+        ui: &mut egui::Ui,
+        headers: &[String],
+        rows: &[Vec<String>],
+        row_indices: &[usize],
+    ) {
+        if headers.is_empty() {
+            return;
+        }
+
+        egui::Grid::new(format!("result_table_{:p}", row_indices))
+            .striped(true)
+            .show(ui, |ui| {
+                for header in headers {
+                    ui.strong(header);
+                }
+                ui.end_row();
+
+                for row_index in row_indices.iter().take(250) {
+                    if let Some(source_row) = rows.get(*row_index) {
+                        for column_index in 0..headers.len() {
+                            ui.label(
+                                source_row
+                                    .get(column_index)
+                                    .map(String::as_str)
+                                    .unwrap_or_default(),
+                            );
+                        }
+                        ui.end_row();
+                    }
+                }
+            });
     }
 
     fn open_source_file(&mut self) {
@@ -881,7 +910,8 @@ impl IncidentClusteringApp {
                             entry.update.step, entry.update.total_steps
                         ));
                         ui.label(
-                            entry.update
+                            entry
+                                .update
                                 .substep
                                 .as_ref()
                                 .map(|substep| format!("{}/{}", substep.current, substep.total))
