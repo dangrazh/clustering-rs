@@ -1,4 +1,4 @@
-use crate::model::{AnalysisRun, Cluster, ClusterId, SourceTable};
+use crate::model::{AnalysisRun, Cluster, ClusterId, SourceTable, Subgroup};
 use anyhow::{Context, Result};
 use calamine::{open_workbook_auto, Data, Reader};
 use rust_xlsxwriter::Workbook;
@@ -98,6 +98,9 @@ pub fn export_analysis(run: &AnalysisRun, path: impl AsRef<Path>) -> Result<()> 
         "Cluster ID".to_owned(),
         "Cluster Label".to_owned(),
         "Cluster Size".to_owned(),
+        "Theme ID".to_owned(),
+        "Theme Label".to_owned(),
+        "Theme Size".to_owned(),
     ]);
 
     for (column, header) in headers.iter().enumerate() {
@@ -122,21 +125,18 @@ pub fn export_analysis(run: &AnalysisRun, path: impl AsRef<Path>) -> Result<()> 
             worksheet.write_string(excel_row, column as u16, value)?;
         }
 
-        let (cluster_id, cluster_label, cluster_size) = cluster_lookup
+        let metadata = cluster_lookup
             .get(&source_row_index)
             .cloned()
-            .unwrap_or_else(|| {
-                (
-                    ClusterId::UNCLUSTERED.to_string(),
-                    "Unclustered".to_owned(),
-                    0,
-                )
-            });
+            .unwrap_or_else(ExportRowMetadata::unclustered);
 
         let base_column = run.source.headers.len() as u16;
-        worksheet.write_string(excel_row, base_column, &cluster_id)?;
-        worksheet.write_string(excel_row, base_column + 1, &cluster_label)?;
-        worksheet.write_number(excel_row, base_column + 2, cluster_size as f64)?;
+        worksheet.write_string(excel_row, base_column, &metadata.cluster_id)?;
+        worksheet.write_string(excel_row, base_column + 1, &metadata.cluster_label)?;
+        worksheet.write_number(excel_row, base_column + 2, metadata.cluster_size as f64)?;
+        worksheet.write_string(excel_row, base_column + 3, &metadata.theme_id)?;
+        worksheet.write_string(excel_row, base_column + 4, &metadata.theme_label)?;
+        worksheet.write_number(excel_row, base_column + 5, metadata.theme_size as f64)?;
     }
 
     workbook
@@ -144,22 +144,58 @@ pub fn export_analysis(run: &AnalysisRun, path: impl AsRef<Path>) -> Result<()> 
         .with_context(|| format!("failed to save export {}", path.display()))
 }
 
-fn build_cluster_lookup(clusters: &[Cluster]) -> HashMap<usize, (String, String, usize)> {
-    clusters
-        .iter()
-        .flat_map(|cluster| {
-            cluster.incident_row_indices.iter().map(move |row_index| {
-                (
-                    *row_index,
-                    (
-                        cluster.id.to_string(),
-                        cluster.label.clone(),
-                        cluster.size(),
-                    ),
-                )
-            })
-        })
-        .collect()
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExportRowMetadata {
+    cluster_id: String,
+    cluster_label: String,
+    cluster_size: usize,
+    theme_id: String,
+    theme_label: String,
+    theme_size: usize,
+}
+
+impl ExportRowMetadata {
+    fn for_cluster(cluster: &Cluster, theme: Option<&Subgroup>) -> Self {
+        Self {
+            cluster_id: cluster.id.to_string(),
+            cluster_label: cluster.label.clone(),
+            cluster_size: cluster.size(),
+            theme_id: theme.map(|theme| theme.id.to_string()).unwrap_or_default(),
+            theme_label: theme.map(|theme| theme.label.clone()).unwrap_or_default(),
+            theme_size: theme.map(Subgroup::size).unwrap_or_default(),
+        }
+    }
+
+    fn unclustered() -> Self {
+        Self {
+            cluster_id: ClusterId::UNCLUSTERED.to_string(),
+            cluster_label: "Unclustered".to_owned(),
+            cluster_size: 0,
+            theme_id: String::new(),
+            theme_label: String::new(),
+            theme_size: 0,
+        }
+    }
+}
+
+fn build_cluster_lookup(clusters: &[Cluster]) -> HashMap<usize, ExportRowMetadata> {
+    let mut lookup = HashMap::new();
+
+    for cluster in clusters {
+        let cluster_metadata = ExportRowMetadata::for_cluster(cluster, None);
+        for row_index in &cluster.incident_row_indices {
+            lookup.insert(*row_index, cluster_metadata.clone());
+        }
+
+        for theme in &cluster.subgroups {
+            let theme_metadata = ExportRowMetadata::for_cluster(cluster, Some(theme));
+            for row_index in &theme.incident_row_indices {
+                lookup.insert(*row_index, theme_metadata.clone());
+            }
+        }
+    }
+
+    lookup
 }
 
 fn cell_to_string(cell: &Data) -> String {
@@ -190,4 +226,49 @@ pub fn default_export_path(source_path: Option<&Path>) -> PathBuf {
             output
         })
         .unwrap_or_else(|| PathBuf::from("clustered_incidents.xlsx"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Cluster, ClusterId, Subgroup};
+
+    #[test]
+    fn cluster_lookup_includes_theme_metadata() {
+        let clusters = vec![Cluster {
+            id: ClusterId(7),
+            label: "Network incidents".to_owned(),
+            incident_row_indices: vec![1, 2, 3],
+            subgroups: vec![Subgroup {
+                id: 2,
+                label: "Router failures".to_owned(),
+                incident_row_indices: vec![2, 3],
+            }],
+        }];
+
+        let lookup = build_cluster_lookup(&clusters);
+
+        assert_eq!(
+            lookup.get(&2),
+            Some(&ExportRowMetadata {
+                cluster_id: "C0007".to_owned(),
+                cluster_label: "Network incidents".to_owned(),
+                cluster_size: 3,
+                theme_id: "2".to_owned(),
+                theme_label: "Router failures".to_owned(),
+                theme_size: 2,
+            })
+        );
+        assert_eq!(
+            lookup.get(&1),
+            Some(&ExportRowMetadata {
+                cluster_id: "C0007".to_owned(),
+                cluster_label: "Network incidents".to_owned(),
+                cluster_size: 3,
+                theme_id: String::new(),
+                theme_label: String::new(),
+                theme_size: 0,
+            })
+        );
+    }
 }

@@ -7,6 +7,7 @@ use crate::session::{
 };
 use crate::worker::{spawn_analysis, WorkerMessage};
 use eframe::egui;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -28,6 +29,7 @@ pub struct IncidentClusteringApp {
     worker: Option<Receiver<WorkerMessage>>,
     current_progress: Option<ProgressUpdate>,
     progress_log: Vec<ProgressLogEntry>,
+    result_filters: ResultFilters,
     run_started_at: Option<Instant>,
     last_run_elapsed: Option<Duration>,
     results_tree_width: f32,
@@ -42,6 +44,95 @@ struct ProgressLogEntry {
     update: ProgressUpdate,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ResultFilters {
+    selected_values: BTreeMap<usize, BTreeSet<String>>,
+    search_terms: BTreeMap<usize, String>,
+}
+
+impl ResultFilters {
+    fn active_count(&self) -> usize {
+        self.selected_values.len()
+    }
+
+    fn clear(&mut self) {
+        self.selected_values.clear();
+        self.search_terms.clear();
+    }
+
+    fn matches_row(&self, row: &[String]) -> bool {
+        self.selected_values.iter().all(|(column, selected)| {
+            row.get(*column)
+                .map(|value| selected.contains(value))
+                .unwrap_or_else(|| selected.contains(""))
+        })
+    }
+
+    fn selected_count(&self, column: usize, total_values: usize) -> usize {
+        self.selected_values
+            .get(&column)
+            .map(BTreeSet::len)
+            .unwrap_or(total_values)
+    }
+
+    fn value_is_selected(&self, column: usize, value: &str) -> bool {
+        self.selected_values
+            .get(&column)
+            .map(|selected| selected.contains(value))
+            .unwrap_or(true)
+    }
+
+    fn select_all(&mut self, column: usize) {
+        self.selected_values.remove(&column);
+    }
+
+    fn select_none(&mut self, column: usize) {
+        self.selected_values.insert(column, BTreeSet::new());
+    }
+
+    fn select_none_if_all_selected(&mut self, column: usize) {
+        self.selected_values.entry(column).or_default();
+    }
+
+    fn set_value_selected(
+        &mut self,
+        column: usize,
+        value: &str,
+        selected: bool,
+        all_values: &BTreeSet<String>,
+    ) {
+        let selected_values = self
+            .selected_values
+            .entry(column)
+            .or_insert_with(|| all_values.clone());
+
+        if selected {
+            selected_values.insert(value.to_owned());
+        } else {
+            selected_values.remove(value);
+        }
+
+        if selected_values.len() == all_values.len() {
+            self.selected_values.remove(&column);
+        }
+    }
+
+    fn search_term_mut(&mut self, column: usize) -> &mut String {
+        self.search_terms.entry(column).or_default()
+    }
+
+    fn search_term(&self, column: usize) -> &str {
+        self.search_terms
+            .get(&column)
+            .map(String::as_str)
+            .unwrap_or_default()
+    }
+
+    fn clear_search_term(&mut self, column: usize) {
+        self.search_terms.remove(&column);
+    }
+}
+
 impl Default for IncidentClusteringApp {
     fn default() -> Self {
         Self {
@@ -53,6 +144,7 @@ impl Default for IncidentClusteringApp {
             worker: None,
             current_progress: None,
             progress_log: Vec::new(),
+            result_filters: ResultFilters::default(),
             run_started_at: None,
             last_run_elapsed: None,
             results_tree_width: 1_400.0,
@@ -416,19 +508,31 @@ impl IncidentClusteringApp {
 
     fn results_screen(&mut self, ui: &mut egui::Ui) {
         screen_heading(ui, "4. Explore results");
-        let Some(analysis) = &self.analysis else {
+        let Some((
+            processed_count,
+            ignored_count,
+            cluster_count,
+            unclustered_count,
+            filtered_processed_count,
+        )) = self.analysis.as_ref().map(|analysis| {
+            (
+                analysis.processed_incidents.len(),
+                analysis.ignored_rows.len(),
+                analysis.clusters.len(),
+                analysis.unclustered_row_indices.len(),
+                self.filtered_processed_count(analysis),
+            )
+        })
+        else {
             ui.label("No analysis results available.");
             return;
         };
-        let processed_count = analysis.processed_incidents.len();
-        let ignored_count = analysis.ignored_rows.len();
-        let cluster_count = analysis.clusters.len();
-        let unclustered_count = analysis.unclustered_row_indices.len();
 
         summary_row(
             ui,
             &[
                 ("Processed", processed_count.to_string()),
+                ("Visible", filtered_processed_count.to_string()),
                 ("Ignored", ignored_count.to_string()),
                 ("Clusters", cluster_count.to_string()),
                 ("Unclustered", unclustered_count.to_string()),
@@ -467,6 +571,35 @@ impl IncidentClusteringApp {
         });
 
         ui.add_space(8.0);
+        let Some((headers, filter_options)) = self.analysis.as_ref().map(|analysis| {
+            (
+                analysis.source.headers.clone(),
+                self.result_filter_options(analysis),
+            )
+        }) else {
+            return;
+        };
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("Filters");
+                if self.result_filters.active_count() == 0 {
+                    ui.label("All detail records visible");
+                } else {
+                    ui.label(format!(
+                        "{} active, {} visible records",
+                        self.result_filters.active_count(),
+                        filtered_processed_count
+                    ));
+                }
+                if ui.button("Clear all").clicked() {
+                    self.result_filters.clear();
+                }
+            });
+            ui.add_space(4.0);
+            self.result_filter_header(ui, &headers, &filter_options);
+        });
+
+        ui.add_space(8.0);
         let Some(analysis) = &self.analysis else {
             return;
         };
@@ -476,32 +609,180 @@ impl IncidentClusteringApp {
             .show(ui, |ui| {
                 ui.set_min_width(tree_width);
                 for cluster in &analysis.clusters {
+                    let filtered_cluster_rows = self
+                        .filtered_row_indices(&analysis.source.rows, &cluster.incident_row_indices);
+                    if filtered_cluster_rows.is_empty() {
+                        continue;
+                    }
+
                     egui::CollapsingHeader::new(format!(
                         "{} - {} ({})",
                         cluster.id,
                         cluster.label,
-                        cluster.size()
+                        filtered_cluster_rows.len()
                     ))
                     .default_open(false)
                     .show(ui, |ui| {
                         for subgroup in &cluster.subgroups {
+                            let filtered_theme_rows = self.filtered_row_indices(
+                                &analysis.source.rows,
+                                &subgroup.incident_row_indices,
+                            );
+                            if filtered_theme_rows.is_empty() {
+                                continue;
+                            }
+
                             egui::CollapsingHeader::new(format!(
                                 "Theme {} - {} ({})",
                                 subgroup.id,
                                 subgroup.label,
-                                subgroup.size()
+                                filtered_theme_rows.len()
                             ))
                             .show(ui, |ui| {
                                 self.result_rows_table(
                                     ui,
                                     &analysis.source.headers,
                                     &analysis.source.rows,
-                                    &subgroup.incident_row_indices,
+                                    &filtered_theme_rows,
                                 );
                             });
                         }
                     });
                 }
+            });
+    }
+
+    fn filtered_processed_count(&self, analysis: &AnalysisRun) -> usize {
+        analysis
+            .processed_incidents
+            .iter()
+            .filter(|record| {
+                analysis
+                    .source
+                    .rows
+                    .get(record.source_row_index)
+                    .map(|row| self.result_filters.matches_row(row))
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    fn filtered_row_indices(&self, rows: &[Vec<String>], row_indices: &[usize]) -> Vec<usize> {
+        row_indices
+            .iter()
+            .copied()
+            .filter(|row_index| {
+                rows.get(*row_index)
+                    .map(|row| self.result_filters.matches_row(row))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    fn result_filter_options(&self, analysis: &AnalysisRun) -> Vec<BTreeSet<String>> {
+        let mut values = vec![BTreeSet::new(); analysis.source.headers.len()];
+
+        for record in &analysis.processed_incidents {
+            let Some(row) = analysis.source.rows.get(record.source_row_index) else {
+                continue;
+            };
+
+            for (column, column_values) in values.iter_mut().enumerate() {
+                column_values.insert(row.get(column).cloned().unwrap_or_default());
+            }
+        }
+
+        values
+    }
+
+    fn result_filter_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        headers: &[String],
+        filter_options: &[BTreeSet<String>],
+    ) {
+        egui::ScrollArea::horizontal()
+            .id_salt("result_filter_header_scroll")
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (column, header) in headers.iter().enumerate() {
+                        let Some(values) = filter_options.get(column) else {
+                            continue;
+                        };
+                        self.result_filter_menu(ui, column, header, values);
+                    }
+                });
+            });
+    }
+
+    fn result_filter_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        column: usize,
+        header: &str,
+        values: &BTreeSet<String>,
+    ) {
+        let selected_count = self.result_filters.selected_count(column, values.len());
+        let button_text = if self.result_filters.selected_values.contains_key(&column) {
+            format!("{header} ({selected_count}/{})", values.len())
+        } else {
+            header.to_owned()
+        };
+
+        let button_response = ui.button(button_text);
+        egui::Popup::menu(&button_response)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .width(280.0)
+            .show(|ui| {
+                ui.set_min_width(260.0);
+                ui.horizontal(|ui| {
+                    ui.label("Search");
+                    let search_response = ui.add(
+                        egui::TextEdit::singleline(self.result_filters.search_term_mut(column))
+                            .hint_text("Contains..."),
+                    );
+                    if search_response.changed()
+                        && !self.result_filters.search_term(column).is_empty()
+                    {
+                        self.result_filters.select_none_if_all_selected(column);
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.result_filters.clear_search_term(column);
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Select all").clicked() {
+                        self.result_filters.select_all(column);
+                    }
+                    if ui.button("Select none").clicked() {
+                        self.result_filters.select_none(column);
+                    }
+                });
+                ui.separator();
+
+                egui::ScrollArea::vertical()
+                    .id_salt(("result_filter_values", column))
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        let search_term = self.result_filters.search_term(column).to_lowercase();
+                        let mut shown_values = 0usize;
+                        for value in values.iter().filter(|value| {
+                            search_term.is_empty() || value.to_lowercase().contains(&search_term)
+                        }) {
+                            shown_values += 1;
+                            let mut selected = self.result_filters.value_is_selected(column, value);
+                            let display_value = if value.is_empty() { "(blank)" } else { value };
+                            if ui.checkbox(&mut selected, display_value).changed() {
+                                self.result_filters
+                                    .set_value_selected(column, value, selected, values);
+                            }
+                        }
+                        if shown_values == 0 {
+                            ui.label("No matching values.");
+                        }
+                    });
             });
     }
 
@@ -697,6 +978,7 @@ impl IncidentClusteringApp {
                         run.clusters.len(),
                         run.ignored_rows.len()
                     );
+                    self.result_filters.clear();
                     self.analysis = Some(*run);
                     self.current_progress = None;
                     self.screen = Screen::Results;
@@ -798,6 +1080,7 @@ impl IncidentClusteringApp {
                 self.source = Some(run.source.clone());
                 self.mapping = run.mapping.clone();
                 self.settings = run.settings.clone();
+                self.result_filters.clear();
                 self.analysis = Some(run);
                 self.screen = Screen::Results;
                 self.status = format!("Loaded session {}", path.display());
