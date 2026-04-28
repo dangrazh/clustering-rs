@@ -5,6 +5,9 @@ use rust_xlsxwriter::Workbook;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+const EXCEL_CELL_CHAR_LIMIT: usize = 32_767;
+const EXCEL_TRUNCATION_SUFFIX: &str = "...";
+
 pub fn import_source(path: impl AsRef<Path>) -> Result<SourceTable> {
     let path = path.as_ref();
     match path
@@ -104,7 +107,7 @@ pub fn export_analysis(run: &AnalysisRun, path: impl AsRef<Path>) -> Result<()> 
     ]);
 
     for (column, header) in headers.iter().enumerate() {
-        worksheet.write_string(0, column as u16, header)?;
+        worksheet.write_string(0, column as u16, truncate_for_excel(header))?;
     }
 
     let cluster_lookup = build_cluster_lookup(&run.clusters);
@@ -122,7 +125,7 @@ pub fn export_analysis(run: &AnalysisRun, path: impl AsRef<Path>) -> Result<()> 
             .with_context(|| format!("source row {source_row_index} is missing"))?;
 
         for (column, value) in source_row.iter().enumerate() {
-            worksheet.write_string(excel_row, column as u16, value)?;
+            worksheet.write_string(excel_row, column as u16, truncate_for_excel(value))?;
         }
 
         let metadata = cluster_lookup
@@ -131,11 +134,27 @@ pub fn export_analysis(run: &AnalysisRun, path: impl AsRef<Path>) -> Result<()> 
             .unwrap_or_else(ExportRowMetadata::unclustered);
 
         let base_column = run.source.headers.len() as u16;
-        worksheet.write_string(excel_row, base_column, &metadata.cluster_id)?;
-        worksheet.write_string(excel_row, base_column + 1, &metadata.cluster_label)?;
+        worksheet.write_string(
+            excel_row,
+            base_column,
+            truncate_for_excel(&metadata.cluster_id),
+        )?;
+        worksheet.write_string(
+            excel_row,
+            base_column + 1,
+            truncate_for_excel(&metadata.cluster_label),
+        )?;
         worksheet.write_number(excel_row, base_column + 2, metadata.cluster_size as f64)?;
-        worksheet.write_string(excel_row, base_column + 3, &metadata.theme_id)?;
-        worksheet.write_string(excel_row, base_column + 4, &metadata.theme_label)?;
+        worksheet.write_string(
+            excel_row,
+            base_column + 3,
+            truncate_for_excel(&metadata.theme_id),
+        )?;
+        worksheet.write_string(
+            excel_row,
+            base_column + 4,
+            truncate_for_excel(&metadata.theme_label),
+        )?;
         worksheet.write_number(excel_row, base_column + 5, metadata.theme_size as f64)?;
     }
 
@@ -212,6 +231,19 @@ fn cell_to_string(cell: &Data) -> String {
     }
 }
 
+fn truncate_for_excel(value: &str) -> std::borrow::Cow<'_, str> {
+    if value.chars().count() <= EXCEL_CELL_CHAR_LIMIT {
+        return std::borrow::Cow::Borrowed(value);
+    }
+
+    let truncated = value
+        .chars()
+        .take(EXCEL_CELL_CHAR_LIMIT - EXCEL_TRUNCATION_SUFFIX.chars().count())
+        .collect::<String>();
+
+    std::borrow::Cow::Owned(format!("{truncated}{EXCEL_TRUNCATION_SUFFIX}"))
+}
+
 #[allow(dead_code)]
 pub fn default_export_path(source_path: Option<&Path>) -> PathBuf {
     source_path
@@ -269,6 +301,26 @@ mod tests {
                 theme_label: String::new(),
                 theme_size: 0,
             })
+        );
+    }
+
+    #[test]
+    fn truncate_for_excel_preserves_values_at_limit() {
+        let value = "a".repeat(EXCEL_CELL_CHAR_LIMIT);
+
+        assert_eq!(truncate_for_excel(&value), value);
+    }
+
+    #[test]
+    fn truncate_for_excel_shortens_values_over_limit() {
+        let value = "a".repeat(EXCEL_CELL_CHAR_LIMIT + 1);
+        let truncated = truncate_for_excel(&value);
+
+        assert_eq!(truncated.chars().count(), EXCEL_CELL_CHAR_LIMIT);
+        assert!(truncated.ends_with(EXCEL_TRUNCATION_SUFFIX));
+        assert_eq!(
+            truncated.chars().take(EXCEL_CELL_CHAR_LIMIT - 3).collect::<String>(),
+            "a".repeat(EXCEL_CELL_CHAR_LIMIT - 3)
         );
     }
 }
