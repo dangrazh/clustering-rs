@@ -319,10 +319,7 @@ mod tests {
         assert_eq!(truncated.chars().count(), EXCEL_CELL_CHAR_LIMIT);
         assert!(truncated.ends_with(EXCEL_TRUNCATION_SUFFIX));
         assert_eq!(
-            truncated
-                .chars()
-                .take(EXCEL_CELL_CHAR_LIMIT - 3)
-                .collect::<String>(),
+            truncated.chars().take(EXCEL_CELL_CHAR_LIMIT - 3).collect::<String>(),
             "a".repeat(EXCEL_CELL_CHAR_LIMIT - 3)
         );
     }
