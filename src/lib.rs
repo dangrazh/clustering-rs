@@ -7,4 +7,5 @@ pub mod progress;
 pub mod schema;
 pub mod session;
 pub mod text;
+pub mod web;
 pub mod worker;

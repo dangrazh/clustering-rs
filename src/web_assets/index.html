@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Incident Clustering Analyzer</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Incident Clustering Analyzer</h1>
+        <p id="sourceStatus">No source loaded</p>
+      </div>
+      <nav class="steps" aria-label="Workflow">
+        <button data-step="source" class="active">1 Source</button>
+        <button data-step="mapping" disabled>2 Mapping</button>
+        <button data-step="analysis" disabled>3 Analysis</button>
+        <button data-step="results" disabled>4 Results</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="source" class="screen active">
+        <div class="section-head">
+          <h2>Source file</h2>
+          <label class="button primary">
+            Open CSV/XLSX
+            <input id="fileInput" type="file" accept=".csv,.xlsx,.xlsm,.xls" />
+          </label>
+        </div>
+        <div id="worksheetBar" class="toolbar hidden"></div>
+        <div id="sourceStats" class="stats"></div>
+        <div id="previewTable" class="table-wrap"></div>
+      </section>
+
+      <section id="mapping" class="screen">
+        <div class="section-head">
+          <h2>Field mapping</h2>
+          <div class="toolbar">
+            <button id="downloadMapping">Save Mapping</button>
+            <label class="button">
+              Load Mapping
+              <input id="mappingInput" type="file" accept=".json" />
+            </label>
+            <button id="confirmMapping" class="primary">Confirm Field Mapping</button>
+          </div>
+        </div>
+        <div id="mappingForm" class="form-grid"></div>
+        <h3>Additional text for similarity</h3>
+        <div id="additionalText" class="check-list"></div>
+      </section>
+
+      <section id="analysis" class="screen">
+        <div class="section-head">
+          <h2>Analysis</h2>
+          <button id="startAnalysis" class="primary">Start Analysis</button>
+        </div>
+        <div class="settings">
+          <label>Minimum cluster size <input id="minimumClusterSize" type="number" min="2" step="1" /></label>
+          <label>Cluster threshold <input id="similarityThreshold" type="number" min="1" max="100" step="1" /></label>
+          <label>Theme threshold <input id="subgroupThreshold" type="number" min="1" max="100" step="1" /></label>
+        </div>
+        <div class="progress-panel">
+          <div class="progress-track"><div id="progressBar" class="progress-bar">0%</div></div>
+          <div id="progressMessage" class="muted">Waiting to start.</div>
+          <div id="workerProgress" class="workers"></div>
+        </div>
+        <div id="progressLog" class="log"></div>
+      </section>
+
+      <section id="results" class="screen">
+        <div class="section-head">
+          <h2>Results</h2>
+          <div class="toolbar">
+            <button id="downloadSession">Save Session</button>
+            <button id="exportExcel" class="primary">Export Excel</button>
+          </div>
+        </div>
+        <div id="resultStats" class="stats"></div>
+        <div class="results-layout">
+          <aside id="clusterList" class="cluster-list"></aside>
+          <section class="detail-pane">
+            <div class="detail-controls">
+              <div id="pageStatus" class="muted">No records selected.</div>
+              <div class="toolbar">
+                <label class="page-size">
+                  Rows per page
+                  <select id="pageSize">
+                    <option value="25">25</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                    <option value="250">250</option>
+                    <option value="500">500</option>
+                  </select>
+                </label>
+                <button id="previousPage">Previous</button>
+                <button id="nextPage">Next</button>
+              </div>
+            </div>
+            <div id="detailTable" class="table-wrap results-table"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <footer id="statusLine">Select a CSV or Excel incident export.</footer>
+    <script src="/app.js"></script>
+  </body>
+</html>

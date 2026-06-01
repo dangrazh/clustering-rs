@@ -1,7 +1,8 @@
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubstepProgress {
     pub current: usize,
     pub total: usize,
@@ -18,7 +19,7 @@ impl SubstepProgress {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerProgress {
     pub worker: usize,
     pub completed: usize,
@@ -35,7 +36,7 @@ impl WorkerProgress {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgressUpdate {
     pub step: usize,
     pub total_steps: usize,

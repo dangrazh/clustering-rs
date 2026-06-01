@@ -8,8 +8,8 @@ mod gpui_app {
     };
     use crate::worker::{spawn_analysis, WorkerMessage};
     use gpui::{
-        div, px, rgb, App, AppContext, Context, Div, Entity, FontWeight,
-        InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, Stateful,
+        div, px, rgb, App, AppContext, Context, Div, Entity, FontWeight, InteractiveElement,
+        IntoElement, ParentElement, Pixels, Render, SharedString, Stateful,
         StatefulInteractiveElement, Styled, Window,
     };
     use gpui_component::{
@@ -52,19 +52,19 @@ mod gpui_app {
         /// Accent: muted slate-teal — professional, not neon.
         fn light() -> Self {
             Self {
-                bg: 0xf5f3ef,        // warm off-white background
-                panel: 0xfcfaf7,     // slightly brighter panel surface
-                ink: 0x2c2f33,       // dark charcoal text (softer than pure black)
-                muted: 0x7a7f85,     // mid-gray for secondary text
-                border: 0xd4d6d1,    // subtle warm gray border
-                accent: 0x3d7a6a,    // muted teal — clear but gentle
-                accent_dark: 0x2e5f52, // darker teal for pressed / borders
-                button_bg: 0xf0eeea, // button resting state
-                disabled_bg: 0xe4e2de, // disabled controls
-                accent_text: 0xffffff, // white text on accent backgrounds
-                active_bg: 0xddeee7, // light teal tint for active/selected
-                table_header: 0xeae8e3, // warm header row
-                alt_row: 0xf8f6f2,   // very subtle alternating row
+                bg: 0xf5f3ef,             // warm off-white background
+                panel: 0xfcfaf7,          // slightly brighter panel surface
+                ink: 0x2c2f33,            // dark charcoal text (softer than pure black)
+                muted: 0x7a7f85,          // mid-gray for secondary text
+                border: 0xd4d6d1,         // subtle warm gray border
+                accent: 0x3d7a6a,         // muted teal — clear but gentle
+                accent_dark: 0x2e5f52,    // darker teal for pressed / borders
+                button_bg: 0xf0eeea,      // button resting state
+                disabled_bg: 0xe4e2de,    // disabled controls
+                accent_text: 0xffffff,    // white text on accent backgrounds
+                active_bg: 0xddeee7,      // light teal tint for active/selected
+                table_header: 0xeae8e3,   // warm header row
+                alt_row: 0xf8f6f2,        // very subtle alternating row
                 progress_track: 0xdddbd6, // progress bar track
             }
         }
@@ -73,19 +73,19 @@ mod gpui_app {
         /// extended use; accent stands out without being glaring.
         fn dark() -> Self {
             Self {
-                bg: 0x1c1e21,        // deep charcoal background
-                panel: 0x252830,     // slightly elevated panel surface
-                ink: 0xd8dae0,       // light gray text (softer than pure white)
-                muted: 0x848990,     // de-saturated mid-gray
-                border: 0x3a3d44,    // subtle dark border
-                accent: 0x5aab95,    // brighter teal that reads well on dark
-                accent_dark: 0x468a78, // pressed / ring teal
-                button_bg: 0x2e3138, // button resting state
-                disabled_bg: 0x33363d, // disabled controls
-                accent_text: 0xffffff, // white text on accent backgrounds
-                active_bg: 0x293d36, // dark teal wash for active/selected
-                table_header: 0x2b2e35, // header row
-                alt_row: 0x22252b,   // very subtle alternating row
+                bg: 0x1c1e21,             // deep charcoal background
+                panel: 0x252830,          // slightly elevated panel surface
+                ink: 0xd8dae0,            // light gray text (softer than pure white)
+                muted: 0x848990,          // de-saturated mid-gray
+                border: 0x3a3d44,         // subtle dark border
+                accent: 0x5aab95,         // brighter teal that reads well on dark
+                accent_dark: 0x468a78,    // pressed / ring teal
+                button_bg: 0x2e3138,      // button resting state
+                disabled_bg: 0x33363d,    // disabled controls
+                accent_text: 0xffffff,    // white text on accent backgrounds
+                active_bg: 0x293d36,      // dark teal wash for active/selected
+                table_header: 0x2b2e35,   // header row
+                alt_row: 0x22252b,        // very subtle alternating row
                 progress_track: 0x353840, // progress bar track
             }
         }
@@ -155,11 +155,7 @@ mod gpui_app {
             })
         }
 
-        fn filtered_row_indices(
-            &self,
-            rows: &[Vec<String>],
-            row_indices: &[usize],
-        ) -> Vec<usize> {
+        fn filtered_row_indices(&self, rows: &[Vec<String>], row_indices: &[usize]) -> Vec<usize> {
             row_indices
                 .iter()
                 .copied()
@@ -336,17 +332,19 @@ mod gpui_app {
             self.detail_table_state = None;
         }
 
-        fn rebuild_detail_table_state(
-            &mut self,
-            window: &mut Window,
-            cx: &mut Context<Self>,
-        ) {
-            let Some(analysis) = &self.analysis else { return };
+        fn rebuild_detail_table_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+            let Some(analysis) = &self.analysis else {
+                return;
+            };
             let detail_rows = self.selected_detail_rows(analysis);
             let headers = analysis.source.headers.clone();
             let pal = self.palette;
             self.detail_table_state = Some(cx.new(|cx| {
-                TableState::new(GridTableDelegate::new(headers, detail_rows, pal), window, cx)
+                TableState::new(
+                    GridTableDelegate::new(headers, detail_rows, pal),
+                    window,
+                    cx,
+                )
             }));
         }
 
@@ -409,7 +407,8 @@ mod gpui_app {
             };
             let selected = self.screen == screen;
             let title = format!("{number}  {label}  {}", self.step_state(screen));
-            let mut item = button_base(format!("workflow-{number}"), title, selected, enabled, &pal);
+            let mut item =
+                button_base(format!("workflow-{number}"), title, selected, enabled, &pal);
             if enabled {
                 item = item.on_click(cx.listener(move |view, _, _window, cx| {
                     view.screen = screen;
@@ -621,33 +620,31 @@ mod gpui_app {
                                         .w(px(14.0))
                                         .h(px(14.0))
                                         .border_1()
-                                        .border_color(
-                                            if selected { rgb(pal.accent) } else { rgb(pal.border) },
-                                        )
-                                        .bg(
-                                            if selected { rgb(pal.accent) } else { rgb(pal.panel) },
-                                        )
+                                        .border_color(if selected {
+                                            rgb(pal.accent)
+                                        } else {
+                                            rgb(pal.border)
+                                        })
+                                        .bg(if selected {
+                                            rgb(pal.accent)
+                                        } else {
+                                            rgb(pal.panel)
+                                        })
                                         .flex_shrink_0(),
                                 )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .child(header.clone()),
-                                )
-                                .on_click(cx.listener(
-                                    move |view, _, _window, cx| {
-                                        if view.mapping.additional_text.contains(&index) {
-                                            view.mapping
-                                                .additional_text
-                                                .retain(|value| *value != index);
-                                        } else {
-                                            view.mapping.additional_text.push(index);
-                                            view.mapping.additional_text.sort_unstable();
-                                            view.mapping.additional_text.dedup();
-                                        }
-                                        cx.notify();
-                                    },
-                                ))
+                                .child(div().text_sm().child(header.clone()))
+                                .on_click(cx.listener(move |view, _, _window, cx| {
+                                    if view.mapping.additional_text.contains(&index) {
+                                        view.mapping
+                                            .additional_text
+                                            .retain(|value| *value != index);
+                                    } else {
+                                        view.mapping.additional_text.push(index);
+                                        view.mapping.additional_text.sort_unstable();
+                                        view.mapping.additional_text.dedup();
+                                    }
+                                    cx.notify();
+                                }))
                         })),
                 )
                 .child(
@@ -728,41 +725,39 @@ mod gpui_app {
                 )
                 .child(
                     split_dropdown_button(label, truncate(&selected_text, 36), false, &pal)
-                        .dropdown_menu(
-                            move |mut menu, _window, _cx| {
-                                let none_app = app.clone();
+                        .dropdown_menu(move |mut menu, _window, _cx| {
+                            let none_app = app.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new("Not mapped")
+                                    .checked(selected.is_none())
+                                    .on_click(move |_, _, cx| {
+                                        none_app
+                                            .update(cx, |view, cx| {
+                                                update(&mut view.mapping, None);
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                    }),
+                            );
+
+                            for (index, header) in headers.iter().cloned().enumerate() {
+                                let item_app = app.clone();
+                                let is_selected = selected == Some(index);
                                 menu = menu.item(
-                                    PopupMenuItem::new("Not mapped")
-                                        .checked(selected.is_none())
+                                    PopupMenuItem::new(truncate(&header, 56))
+                                        .checked(is_selected)
                                         .on_click(move |_, _, cx| {
-                                            none_app
+                                            item_app
                                                 .update(cx, |view, cx| {
-                                                    update(&mut view.mapping, None);
+                                                    update(&mut view.mapping, Some(index));
                                                     cx.notify();
                                                 })
                                                 .ok();
                                         }),
                                 );
-
-                                for (index, header) in headers.iter().cloned().enumerate() {
-                                    let item_app = app.clone();
-                                    let is_selected = selected == Some(index);
-                                    menu = menu.item(
-                                        PopupMenuItem::new(truncate(&header, 56))
-                                            .checked(is_selected)
-                                            .on_click(move |_, _, cx| {
-                                                item_app
-                                                    .update(cx, |view, cx| {
-                                                        update(&mut view.mapping, Some(index));
-                                                        cx.notify();
-                                                    })
-                                                    .ok();
-                                            }),
-                                    );
-                                }
-                                menu
-                            },
-                        ),
+                            }
+                            menu
+                        }),
                 )
                 .child(
                     div()
@@ -820,9 +815,7 @@ mod gpui_app {
                             10,
                             90,
                             1,
-                            |settings, value| {
-                                settings.similarity_threshold_percent = value as u8
-                            },
+                            |settings, value| settings.similarity_threshold_percent = value as u8,
                         ))
                         .child(self.number_control(
                             cx,
@@ -837,19 +830,17 @@ mod gpui_app {
                             },
                         )),
                 )
-                .child(
-                    div().pt_2().flex().child(primary_action_button(
-                        cx,
-                        "start-analysis",
-                        "Start Analysis",
-                        true,
-                        |view, cx| {
-                            view.start_analysis();
-                            cx.notify();
-                        },
-                        &pal,
-                    )),
-                )
+                .child(div().pt_2().flex().child(primary_action_button(
+                    cx,
+                    "start-analysis",
+                    "Start Analysis",
+                    true,
+                    |view, cx| {
+                        view.start_analysis();
+                        cx.notify();
+                    },
+                    &pal,
+                )))
         }
 
         fn number_control(
@@ -1094,10 +1085,7 @@ mod gpui_app {
         fn results_screen(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let pal = self.palette;
             let Some(analysis) = &self.analysis else {
-                return div()
-                    .flex_1()
-                    .p_4()
-                    .child("No analysis results available.");
+                return div().flex_1().p_4().child("No analysis results available.");
             };
 
             let filtered_count = self.filtered_processed_count(analysis);
@@ -1249,71 +1237,71 @@ mod gpui_app {
                 values.len()
             );
 
-            split_dropdown_button(format!("filter-menu-{column}"), button_label, is_filtered, &pal)
-                .dropdown_menu(
-                move |mut menu, _window, _cx| {
-                    let all_app = app.clone();
-                    menu = menu.item(PopupMenuItem::new("Select all").on_click(move |_, _, cx| {
-                        all_app
+            split_dropdown_button(
+                format!("filter-menu-{column}"),
+                button_label,
+                is_filtered,
+                &pal,
+            )
+            .dropdown_menu(move |mut menu, _window, _cx| {
+                let all_app = app.clone();
+                menu = menu.item(PopupMenuItem::new("Select all").on_click(move |_, _, cx| {
+                    all_app
+                        .update(cx, |view, cx| {
+                            view.result_filters.select_all(column);
+                            view.invalidate_tree();
+                            cx.notify();
+                        })
+                        .ok();
+                }));
+
+                let none_app = app.clone();
+                menu = menu.item(PopupMenuItem::new("Select none").on_click(move |_, _, cx| {
+                    none_app
+                        .update(cx, |view, cx| {
+                            view.result_filters.select_none(column);
+                            view.invalidate_tree();
+                            cx.notify();
+                        })
+                        .ok();
+                }));
+
+                menu = menu.item(PopupMenuItem::separator());
+
+                #[allow(clippy::unnecessary_to_owned)] // value must be owned for the move closure
+                for value in values.iter().take(80).cloned() {
+                    let value_app = app.clone();
+                    let all_values = values.clone();
+                    let display = if value.is_empty() {
+                        "(blank)".to_owned()
+                    } else {
+                        truncate(&value, 64)
+                    };
+                    let selected = result_filters.value_is_selected(column, &value);
+                    let label = if selected {
+                        format!("\u{2713}  {display}")
+                    } else {
+                        format!("    {display}")
+                    };
+                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                        value_app
                             .update(cx, |view, cx| {
-                                view.result_filters.select_all(column);
+                                let selected_now =
+                                    view.result_filters.value_is_selected(column, &value);
+                                view.result_filters.set_value_selected(
+                                    column,
+                                    &value,
+                                    !selected_now,
+                                    &all_values,
+                                );
                                 view.invalidate_tree();
                                 cx.notify();
                             })
                             .ok();
                     }));
-
-                    let none_app = app.clone();
-                    menu =
-                        menu.item(PopupMenuItem::new("Select none").on_click(move |_, _, cx| {
-                            none_app
-                                .update(cx, |view, cx| {
-                                    view.result_filters.select_none(column);
-                                    view.invalidate_tree();
-                                    cx.notify();
-                                })
-                                .ok();
-                        }));
-
-                    menu = menu.item(PopupMenuItem::separator());
-
-                    #[allow(clippy::unnecessary_to_owned)] // value must be owned for the move closure
-                    for value in values.iter().take(80).cloned() {
-                        let value_app = app.clone();
-                        let all_values = values.clone();
-                        let display = if value.is_empty() {
-                            "(blank)".to_owned()
-                        } else {
-                            truncate(&value, 64)
-                        };
-                        let selected = result_filters.value_is_selected(column, &value);
-                        let label = if selected {
-                            format!("\u{2713}  {display}")
-                        } else {
-                            format!("    {display}")
-                        };
-                        menu = menu.item(PopupMenuItem::new(label).on_click(
-                            move |_, _, cx| {
-                                value_app
-                                    .update(cx, |view, cx| {
-                                        let selected_now =
-                                            view.result_filters.value_is_selected(column, &value);
-                                        view.result_filters.set_value_selected(
-                                            column,
-                                            &value,
-                                            !selected_now,
-                                            &all_values,
-                                        );
-                                        view.invalidate_tree();
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            },
-                        ));
-                    }
-                    menu
-                },
-            )
+                }
+                menu
+            })
         }
 
         // -- results explorer (tree + detail table) -----------------------
@@ -1325,7 +1313,10 @@ mod gpui_app {
             _analysis: &AnalysisRun,
         ) -> impl IntoElement {
             let pal = self.palette;
-            let tree_state = self.tree_state.as_ref().expect("tree state built in render");
+            let tree_state = self
+                .tree_state
+                .as_ref()
+                .expect("tree state built in render");
             let table_state = self
                 .detail_table_state
                 .as_ref()
@@ -1361,11 +1352,14 @@ mod gpui_app {
                         .child(tree(
                             tree_state,
                             move |ix, entry, tree_selected, _window, _cx| {
-                                let item_selection =
-                                    selection_from_tree_id(&entry.item().id);
+                                let item_selection = selection_from_tree_id(&entry.item().id);
                                 let app = app.clone();
                                 let chevron = if entry.is_folder() {
-                                    if entry.is_expanded() { "\u{25bc} " } else { "\u{25b6} " }
+                                    if entry.is_expanded() {
+                                        "\u{25bc} "
+                                    } else {
+                                        "\u{25b6} "
+                                    }
                                 } else {
                                     ""
                                 };
@@ -1377,15 +1371,12 @@ mod gpui_app {
                                     .text_sm()
                                     .line_height(px(18.0))
                                     .text_color(rgb(pal.ink))
-                                    .selected(
-                                        tree_selected || item_selection == selected,
-                                    )
+                                    .selected(tree_selected || item_selection == selected)
                                     .on_click(move |_, _, cx| {
                                         if let Some(sel) = item_selection {
                                             app.update(cx, |view, cx| {
                                                 // Toggle: click again to deselect
-                                                if view.result_tree_selection == Some(sel)
-                                                {
+                                                if view.result_tree_selection == Some(sel) {
                                                     view.result_tree_selection = None;
                                                 } else {
                                                     view.result_tree_selection = Some(sel);
@@ -1446,20 +1437,16 @@ mod gpui_app {
                         ),
                 );
 
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .child(
-                    h_resizable("results-explorer")
-                        .child(
-                            resizable_panel()
-                                .size(tree_width)
-                                .size_range(px(200.0)..px(600.0))
-                                .child(tree_pane),
-                        )
-                        .child(resizable_panel().child(detail_pane)),
-                )
+            div().flex_1().min_h_0().flex().child(
+                h_resizable("results-explorer")
+                    .child(
+                        resizable_panel()
+                            .size(tree_width)
+                            .size_range(px(200.0)..px(600.0))
+                            .child(tree_pane),
+                    )
+                    .child(resizable_panel().child(detail_pane)),
+            )
         }
 
         fn selected_detail_rows(&self, analysis: &AnalysisRun) -> Vec<Vec<String>> {
@@ -1880,8 +1867,8 @@ mod gpui_app {
         clusters
             .iter()
             .filter_map(|cluster| {
-                let filtered_cluster_rows = result_filters
-                    .filtered_row_indices(source_rows, &cluster.incident_row_indices);
+                let filtered_cluster_rows =
+                    result_filters.filtered_row_indices(source_rows, &cluster.incident_row_indices);
                 if filtered_cluster_rows.is_empty() {
                     return None;
                 }
@@ -1961,8 +1948,16 @@ mod gpui_app {
             .rounded_md()
             .border_1()
             .border_color(rgb(pal.accent_dark))
-            .bg(if enabled { rgb(pal.accent) } else { rgb(pal.disabled_bg) })
-            .text_color(if enabled { rgb(pal.accent_text) } else { rgb(pal.muted) })
+            .bg(if enabled {
+                rgb(pal.accent)
+            } else {
+                rgb(pal.disabled_bg)
+            })
+            .text_color(if enabled {
+                rgb(pal.accent_text)
+            } else {
+                rgb(pal.muted)
+            })
             .text_sm()
             .font_weight(FontWeight::BOLD)
             .cursor_pointer()
@@ -1992,7 +1987,11 @@ mod gpui_app {
         } else {
             rgb(pal.disabled_bg)
         };
-        let color = if selected { rgb(pal.accent_text) } else { rgb(pal.ink) };
+        let color = if selected {
+            rgb(pal.accent_text)
+        } else {
+            rgb(pal.ink)
+        };
 
         div()
             .id(id)
@@ -2243,8 +2242,9 @@ mod gpui_app {
         pal: &Palette,
     ) -> impl IntoElement {
         let table_pal = *pal;
-        let state =
-            cx.new(|cx| TableState::new(GridTableDelegate::new(headers, rows, table_pal), window, cx));
+        let state = cx.new(|cx| {
+            TableState::new(GridTableDelegate::new(headers, rows, table_pal), window, cx)
+        });
         div()
             .size_full()
             .min_w(px(520.0))

@@ -1,0 +1,619 @@
+use crate::io::{export_analysis, import_source, import_xlsx_sheet, list_worksheets};
+use crate::model::{AnalysisRun, ColumnMapping, RunSettings, SourceTable};
+use crate::progress::ProgressUpdate;
+use crate::schema::{suggest_mapping, validate_mapping};
+use crate::worker::run_analysis_with_progress;
+use anyhow::{Context, Result};
+use bytes::Bytes;
+use futures_util::{stream, StreamExt};
+use http::{Method, StatusCode};
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::{Frame, Incoming};
+use hyper::header::{self, HeaderValue};
+use hyper::service::service_fn;
+use hyper::{Request, Response};
+use hyper_util::rt::TokioIo;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tokio::net::TcpListener;
+use tokio::sync::broadcast;
+use url::form_urlencoded;
+
+type BoxBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
+
+const INDEX_HTML: &str = include_str!("web_assets/index.html");
+const APP_CSS: &str = include_str!("web_assets/app.css");
+const APP_JS: &str = include_str!("web_assets/app.js");
+
+#[derive(Clone, Default)]
+struct WebState {
+    inner: Arc<AppState>,
+}
+
+#[derive(Default)]
+struct AppState {
+    next_id: AtomicU64,
+    sources: Mutex<HashMap<String, StoredSource>>,
+    jobs: Mutex<HashMap<String, Arc<Mutex<AnalysisJob>>>>,
+}
+
+#[derive(Clone)]
+struct StoredSource {
+    file_name: String,
+    path: PathBuf,
+    worksheets: Vec<String>,
+    source: SourceTable,
+}
+
+struct AnalysisJob {
+    status: JobStatus,
+    message: String,
+    started_at: Instant,
+    finished_at: Option<Instant>,
+    progress_log: Vec<ProgressEvent>,
+    result: Option<AnalysisRun>,
+    error: Option<String>,
+    events: broadcast::Sender<ProgressEvent>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum JobStatus {
+    Running,
+    Finished,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgressEvent {
+    kind: String,
+    elapsed_ms: u128,
+    message: String,
+    progress: Option<ProgressUpdate>,
+    result_summary: Option<AnalysisSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceResponse {
+    source_id: String,
+    file_name: String,
+    worksheets: Vec<String>,
+    selected_worksheet: Option<String>,
+    headers: Vec<String>,
+    row_count: usize,
+    preview_rows: Vec<Vec<String>>,
+    suggested_mapping: ColumnMapping,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnalysisSummary {
+    clusters: usize,
+    processed_incidents: usize,
+    ignored_rows: usize,
+    unclustered_incidents: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartAnalysisRequest {
+    source_id: String,
+    mapping: ColumnMapping,
+    settings: RunSettings,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartAnalysisResponse {
+    job_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobSnapshot {
+    status: JobStatus,
+    message: String,
+    elapsed_ms: u128,
+    progress_log: Vec<ProgressEvent>,
+    result_summary: Option<AnalysisSummary>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+pub async fn serve(address: SocketAddr) -> Result<()> {
+    let listener = TcpListener::bind(address).await?;
+    let state = WebState::default();
+    tracing::info!("web UI listening on http://{address}");
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let state = state.clone();
+        tokio::spawn(async move {
+            let io = TokioIo::new(stream);
+            if let Err(err) = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, service_fn(move |request| route(request, state.clone())))
+                .await
+            {
+                tracing::warn!(%err, "HTTP connection failed");
+            }
+        });
+    }
+}
+
+async fn route(
+    request: Request<Incoming>,
+    state: WebState,
+) -> Result<Response<BoxBody>, Infallible> {
+    Ok(match handle(request, state).await {
+        Ok(response) => response,
+        Err(err) => json_error(StatusCode::BAD_REQUEST, err.to_string()),
+    })
+}
+
+async fn handle(request: Request<Incoming>, state: WebState) -> Result<Response<BoxBody>> {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let path = uri.path();
+
+    match (method, path) {
+        (Method::GET, "/") => Ok(text_response(
+            StatusCode::OK,
+            "text/html; charset=utf-8",
+            INDEX_HTML,
+        )),
+        (Method::GET, "/app.css") => Ok(text_response(
+            StatusCode::OK,
+            "text/css; charset=utf-8",
+            APP_CSS,
+        )),
+        (Method::GET, "/app.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            APP_JS,
+        )),
+        (Method::POST, "/api/import") => import_endpoint(request, state).await,
+        (Method::POST, "/api/analyze") => start_analysis_endpoint(request, state).await,
+        (Method::GET, path)
+            if path.starts_with("/api/sources/") && path.ends_with("/worksheet") =>
+        {
+            worksheet_endpoint(&uri, state).await
+        }
+        (Method::GET, path) if path.starts_with("/api/jobs/") && path.ends_with("/events") => {
+            events_endpoint(path, state)
+        }
+        (Method::GET, path) if path.starts_with("/api/jobs/") && path.ends_with("/result") => {
+            result_endpoint(path, state)
+        }
+        (Method::GET, path) if path.starts_with("/api/jobs/") && path.ends_with("/export") => {
+            export_endpoint(path, state).await
+        }
+        (Method::GET, path) if path.starts_with("/api/jobs/") => job_endpoint(path, state),
+        _ => Ok(json_error(StatusCode::NOT_FOUND, "not found")),
+    }
+}
+
+async fn import_endpoint(request: Request<Incoming>, state: WebState) -> Result<Response<BoxBody>> {
+    let query = parse_query(request.uri().query());
+    let file_name = query
+        .get("filename")
+        .cloned()
+        .filter(|name| !name.trim().is_empty())
+        .context("filename query parameter is required")?;
+    let body = request.into_body().collect().await?.to_bytes();
+    anyhow::ensure!(!body.is_empty(), "uploaded file is empty");
+
+    let source_id = state.next_id("source");
+    let path = upload_path(&source_id, &file_name);
+    std::fs::write(&path, &body).with_context(|| format!("failed to write {}", path.display()))?;
+
+    let worksheets = if is_excel(&path) {
+        list_worksheets(&path)?
+    } else {
+        Vec::new()
+    };
+    let source = if let Some(sheet) = worksheets.first() {
+        import_xlsx_sheet(&path, sheet)?
+    } else {
+        import_source(&path)?
+    };
+
+    let stored = StoredSource {
+        file_name,
+        path,
+        worksheets,
+        source,
+    };
+    let response = source_response(&source_id, &stored);
+    state
+        .inner
+        .sources
+        .lock()
+        .expect("source state poisoned")
+        .insert(source_id, stored);
+
+    Ok(json_response(StatusCode::OK, &response)?)
+}
+
+async fn worksheet_endpoint(uri: &http::Uri, state: WebState) -> Result<Response<BoxBody>> {
+    let path = uri.path();
+    let source_id = path
+        .trim_start_matches("/api/sources/")
+        .trim_end_matches("/worksheet")
+        .trim_end_matches('/');
+    let query = parse_query(uri.query());
+    let sheet = query
+        .get("sheet")
+        .context("sheet query parameter is required")?;
+
+    let mut sources = state.inner.sources.lock().expect("source state poisoned");
+    let stored = sources.get_mut(source_id).context("source not found")?;
+    anyhow::ensure!(
+        stored.worksheets.iter().any(|candidate| candidate == sheet),
+        "worksheet was not found in the uploaded workbook"
+    );
+    stored.source = import_xlsx_sheet(&stored.path, sheet)?;
+    let response = source_response(source_id, stored);
+    Ok(json_response(StatusCode::OK, &response)?)
+}
+
+async fn start_analysis_endpoint(
+    request: Request<Incoming>,
+    state: WebState,
+) -> Result<Response<BoxBody>> {
+    let body = request.into_body().collect().await?.to_bytes();
+    let payload: StartAnalysisRequest = serde_json::from_slice(&body)?;
+    let source = {
+        let sources = state.inner.sources.lock().expect("source state poisoned");
+        sources
+            .get(&payload.source_id)
+            .map(|stored| stored.source.clone())
+            .context("source not found")?
+    };
+    validate_mapping(&payload.mapping, &source)?;
+
+    let job_id = state.next_id("job");
+    let (sender, _) = broadcast::channel(128);
+    let job = Arc::new(Mutex::new(AnalysisJob {
+        status: JobStatus::Running,
+        message: "Analysis worker started.".to_owned(),
+        started_at: Instant::now(),
+        finished_at: None,
+        progress_log: Vec::new(),
+        result: None,
+        error: None,
+        events: sender.clone(),
+    }));
+    state
+        .inner
+        .jobs
+        .lock()
+        .expect("job state poisoned")
+        .insert(job_id.clone(), job.clone());
+
+    std::thread::spawn(move || {
+        let progress_job = job.clone();
+        let result = run_analysis_with_progress(
+            source,
+            payload.mapping,
+            payload.settings,
+            move |progress| record_progress(&progress_job, progress),
+        );
+        record_finished(&job, result);
+    });
+
+    Ok(json_response(
+        StatusCode::ACCEPTED,
+        &StartAnalysisResponse { job_id },
+    )?)
+}
+
+fn events_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody>> {
+    let job_id = path
+        .trim_start_matches("/api/jobs/")
+        .trim_end_matches("/events")
+        .trim_end_matches('/');
+    let (snapshot, receiver) = {
+        let jobs = state.inner.jobs.lock().expect("job state poisoned");
+        let job = jobs.get(job_id).context("job not found")?;
+        let job = job.lock().expect("job state poisoned");
+        (snapshot_from_job(&job), job.events.subscribe())
+    };
+
+    let status_kind = snapshot.status_kind().to_owned();
+    let elapsed_ms = snapshot.elapsed_ms;
+    let message = snapshot.message.clone();
+    let initial_events = snapshot.progress_log.into_iter().chain(
+        snapshot
+            .result_summary
+            .clone()
+            .map(|summary| ProgressEvent {
+                kind: status_kind,
+                elapsed_ms,
+                message,
+                progress: None,
+                result_summary: Some(summary),
+            })
+            .into_iter(),
+    );
+
+    let initial = stream::iter(initial_events.map(sse_frame));
+    let live = stream::unfold(receiver, |mut receiver| async move {
+        match receiver.recv().await {
+            Ok(event) => Some((sse_frame(event), receiver)),
+            Err(broadcast::error::RecvError::Lagged(_)) => Some((
+                sse_frame(ProgressEvent {
+                    kind: "status".to_owned(),
+                    elapsed_ms: 0,
+                    message: "Progress stream lagged; latest job state is still available."
+                        .to_owned(),
+                    progress: None,
+                    result_summary: None,
+                }),
+                receiver,
+            )),
+            Err(broadcast::error::RecvError::Closed) => None,
+        }
+    });
+
+    let body = BodyExt::boxed(StreamBody::new(initial.chain(live)));
+    let mut response = Response::new(body);
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    Ok(response)
+}
+
+fn job_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody>> {
+    let job_id = path.trim_start_matches("/api/jobs/").trim_end_matches('/');
+    let jobs = state.inner.jobs.lock().expect("job state poisoned");
+    let job = jobs.get(job_id).context("job not found")?;
+    let job = job.lock().expect("job state poisoned");
+    Ok(json_response(StatusCode::OK, &snapshot_from_job(&job))?)
+}
+
+fn result_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody>> {
+    let job_id = path
+        .trim_start_matches("/api/jobs/")
+        .trim_end_matches("/result")
+        .trim_end_matches('/');
+    let jobs = state.inner.jobs.lock().expect("job state poisoned");
+    let job = jobs.get(job_id).context("job not found")?;
+    let job = job.lock().expect("job state poisoned");
+    let result = job
+        .result
+        .as_ref()
+        .context("analysis result is not ready")?;
+    Ok(json_response(StatusCode::OK, result)?)
+}
+
+async fn export_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody>> {
+    let job_id = path
+        .trim_start_matches("/api/jobs/")
+        .trim_end_matches("/export")
+        .trim_end_matches('/');
+    let analysis = {
+        let jobs = state.inner.jobs.lock().expect("job state poisoned");
+        let job = jobs.get(job_id).context("job not found")?;
+        let job = job.lock().expect("job state poisoned");
+        job.result
+            .clone()
+            .context("analysis result is not ready for export")?
+    };
+    let path = std::env::temp_dir().join(format!("incident-clustering-{job_id}.xlsx"));
+    export_analysis(&analysis, &path)?;
+    let bytes = std::fs::read(&path)?;
+    let _ = std::fs::remove_file(&path);
+
+    let mut response = Response::new(full_body(bytes));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"clustered_incidents.xlsx\""),
+    );
+    Ok(response)
+}
+
+fn record_progress(job: &Arc<Mutex<AnalysisJob>>, progress: ProgressUpdate) {
+    let mut job = job.lock().expect("job state poisoned");
+    let event = ProgressEvent {
+        kind: "progress".to_owned(),
+        elapsed_ms: job.started_at.elapsed().as_millis(),
+        message: format!("{}: {}", progress.stage, progress.detail),
+        progress: Some(progress),
+        result_summary: None,
+    };
+    job.message = event.message.clone();
+    job.progress_log.push(event.clone());
+    if job.progress_log.len() > 80 {
+        job.progress_log.remove(0);
+    }
+    let _ = job.events.send(event);
+}
+
+fn record_finished(job: &Arc<Mutex<AnalysisJob>>, result: Result<AnalysisRun>) {
+    let mut job = job.lock().expect("job state poisoned");
+    job.finished_at = Some(Instant::now());
+    match result {
+        Ok(run) => {
+            let summary = analysis_summary(&run);
+            job.status = JobStatus::Finished;
+            job.message = format!(
+                "Analysis complete: {} clusters, {} ignored rows.",
+                summary.clusters, summary.ignored_rows
+            );
+            job.result = Some(run);
+            let _ = job.events.send(ProgressEvent {
+                kind: "finished".to_owned(),
+                elapsed_ms: elapsed_ms(&job),
+                message: job.message.clone(),
+                progress: None,
+                result_summary: Some(summary),
+            });
+        }
+        Err(err) => {
+            job.status = JobStatus::Failed;
+            job.message = format!("Analysis failed: {err}");
+            job.error = Some(err.to_string());
+            let _ = job.events.send(ProgressEvent {
+                kind: "failed".to_owned(),
+                elapsed_ms: elapsed_ms(&job),
+                message: job.message.clone(),
+                progress: None,
+                result_summary: None,
+            });
+        }
+    }
+}
+
+fn snapshot_from_job(job: &AnalysisJob) -> JobSnapshot {
+    JobSnapshot {
+        status: job.status,
+        message: job.message.clone(),
+        elapsed_ms: elapsed_ms(job),
+        progress_log: job.progress_log.clone(),
+        result_summary: job.result.as_ref().map(analysis_summary),
+        error: job.error.clone(),
+    }
+}
+
+impl JobSnapshot {
+    fn status_kind(&self) -> &'static str {
+        match self.status {
+            JobStatus::Running => "status",
+            JobStatus::Finished => "finished",
+            JobStatus::Failed => "failed",
+        }
+    }
+}
+
+fn source_response(source_id: &str, stored: &StoredSource) -> SourceResponse {
+    SourceResponse {
+        source_id: source_id.to_owned(),
+        file_name: stored.file_name.clone(),
+        worksheets: stored.worksheets.clone(),
+        selected_worksheet: stored.source.worksheet_name.clone(),
+        headers: stored.source.headers.clone(),
+        row_count: stored.source.row_count(),
+        preview_rows: stored.source.rows.iter().take(50).cloned().collect(),
+        suggested_mapping: suggest_mapping(&stored.source.headers),
+    }
+}
+
+fn analysis_summary(run: &AnalysisRun) -> AnalysisSummary {
+    AnalysisSummary {
+        clusters: run.clusters.len(),
+        processed_incidents: run.processed_incidents.len(),
+        ignored_rows: run.ignored_rows.len(),
+        unclustered_incidents: run.unclustered_row_indices.len(),
+    }
+}
+
+fn elapsed_ms(job: &AnalysisJob) -> u128 {
+    job.finished_at
+        .map(|finished_at| finished_at.duration_since(job.started_at))
+        .unwrap_or_else(|| job.started_at.elapsed())
+        .as_millis()
+}
+
+impl WebState {
+    fn next_id(&self, prefix: &str) -> String {
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        format!("{prefix}-{id}")
+    }
+}
+
+fn parse_query(query: Option<&str>) -> HashMap<String, String> {
+    form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .into_owned()
+        .collect()
+}
+
+fn upload_path(source_id: &str, file_name: &str) -> PathBuf {
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("dat");
+    std::env::temp_dir().join(format!("incident-clustering-{source_id}.{extension}"))
+}
+
+fn is_excel(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("xlsx" | "xlsm" | "xls")
+    )
+}
+
+fn sse_frame(event: ProgressEvent) -> Result<Frame<Bytes>, Infallible> {
+    let json = serde_json::to_string(&event).unwrap_or_else(|err| {
+        format!(
+            "{{\"kind\":\"failed\",\"elapsedMs\":0,\"message\":\"failed to serialize event: {err}\",\"progress\":null,\"resultSummary\":null}}"
+        )
+    });
+    Ok(Frame::data(Bytes::from(format!("data: {json}\n\n"))))
+}
+
+fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Result<Response<BoxBody>> {
+    let body = serde_json::to_vec(value)?;
+    let mut response = Response::builder()
+        .status(status)
+        .body(full_body(body))
+        .expect("response builder should be valid");
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    Ok(response)
+}
+
+fn json_error(status: StatusCode, error: impl Into<String>) -> Response<BoxBody> {
+    json_response(
+        status,
+        &ErrorResponse {
+            error: error.into(),
+        },
+    )
+    .expect("error response should serialize")
+}
+
+fn text_response(
+    status: StatusCode,
+    content_type: &'static str,
+    body: &'static str,
+) -> Response<BoxBody> {
+    let mut response = Response::builder()
+        .status(status)
+        .body(full_body(body))
+        .expect("response builder should be valid");
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+}
+
+fn full_body(body: impl Into<Bytes>) -> BoxBody {
+    Full::new(body.into()).boxed()
+}

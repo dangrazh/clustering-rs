@@ -8,6 +8,7 @@ target/
 NuGet.Config
 *.txt
 Tests/
+*.md
 src/IncidentClusteringAnalyzer/obj/
 src/IncidentClusteringAnalyzer/bin/
 src/IncidentClusteringAnalyzer.Core/obj/
