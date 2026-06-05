@@ -41,6 +41,11 @@ body {
   font-family: Aptos, Segoe UI, system-ui, sans-serif;
 }
 
+body.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
 .topbar,
 footer {
   background: var(--panel);
@@ -328,8 +333,8 @@ input[type="number"] {
 .results-layout {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(340px, 32vw) minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(340px, 32vw) 8px minmax(0, 1fr);
+  gap: 0;
   min-height: 560px;
 }
 
@@ -365,6 +370,26 @@ input[type="number"] {
   overflow: auto;
   background: var(--panel);
   border: 1px solid var(--line);
+}
+
+.resize-splitter {
+  cursor: col-resize;
+  position: relative;
+}
+
+.resize-splitter::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: var(--line);
+}
+
+.resize-splitter:hover::before,
+body.is-resizing .resize-splitter::before {
+  background: var(--accent);
 }
 
 .tree-row {
@@ -424,6 +449,52 @@ input[type="number"] {
   min-height: 560px;
 }
 
+.results-table table {
+  table-layout: fixed;
+}
+
+.results-table th {
+  cursor: grab;
+  padding-right: 18px;
+}
+
+.results-table th:active {
+  cursor: grabbing;
+}
+
+.results-table th.dragging {
+  opacity: 0.55;
+}
+
+.results-table th.drag-over {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.column-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.column-resizer::after {
+  content: "";
+  position: absolute;
+  top: 20%;
+  right: 3px;
+  width: 1px;
+  height: 60%;
+  background: var(--line);
+}
+
+.column-resizer:hover::after,
+body.is-resizing .column-resizer::after {
+  background: var(--accent);
+}
+
 footer {
   border-top: 1px solid var(--line);
   padding: 9px 20px;
@@ -440,6 +511,10 @@ footer {
 
   .results-layout {
     grid-template-columns: 1fr;
+  }
+
+  .resize-splitter {
+    display: none;
   }
 
   .detail-controls {

@@ -12,6 +12,9 @@ const state = {
   expandedClusters: new Set(),
   detailPage: 1,
   detailPageSize: 50,
+  resultsTreeWidth: null,
+  detailColumnWidths: [],
+  detailColumnOrder: [],
 };
 
 const roles = [
@@ -27,6 +30,7 @@ const roles = [
 document.addEventListener("DOMContentLoaded", () => {
   bindNavigation();
   bindInputs();
+  bindResultsSplitter();
   syncSettings();
 });
 
@@ -106,6 +110,8 @@ function bindInputs() {
       renderDetailRows();
     }
   });
+
+  window.addEventListener("resize", () => applyResultsPaneWidth());
 
   [
     ["minimumClusterSize", "minimum_cluster_size"],
@@ -274,6 +280,8 @@ async function loadResult(jobId) {
   state.selection = { type: "all" };
   state.expandedClusters = new Set();
   state.detailPage = 1;
+  state.detailColumnWidths = [];
+  state.detailColumnOrder = [];
   document.querySelector('[data-step="results"]').disabled = false;
   renderResults();
   showStep("results");
@@ -281,6 +289,7 @@ async function loadResult(jobId) {
 
 function renderResults() {
   const run = state.analysis;
+  applyResultsPaneWidth();
   document.getElementById("resultStats").innerHTML = statsHtml([
     ["Clusters", run.clusters.length],
     ["Processed", run.processed_incidents.length],
@@ -409,16 +418,158 @@ function renderTable(targetId, headers, rows) {
     target.innerHTML = "";
     return;
   }
-  target.innerHTML = `<table><thead><tr>${headers
-    .map((header) => `<th>${escapeHtml(header)}</th>`)
+  const resizable = targetId === "detailTable";
+  const columnOrder = resizable ? detailColumnOrder(headers.length) : headers.map((_, index) => index);
+  const colgroup = resizable
+    ? `<colgroup>${columnOrder
+        .map((column) => {
+          const width = state.detailColumnWidths[column];
+          return `<col${width ? ` style="width:${width}px"` : ""}>`;
+        })
+        .join("")}</colgroup>`
+    : "";
+  target.innerHTML = `<table>${colgroup}<thead><tr>${columnOrder
+    .map((column, position) => {
+      const dragAttrs = resizable ? ` draggable="true" data-column="${column}" data-position="${position}"` : "";
+      const handle = resizable
+        ? `<span class="column-resizer" data-column="${column}" data-position="${position}"></span>`
+        : "";
+      return `<th${dragAttrs}>${escapeHtml(headers[column])}${handle}</th>`;
+    })
     .join("")}</tr></thead><tbody>${rows
     .map(
       (row) =>
-        `<tr>${headers
-          .map((_, index) => `<td title="${escapeHtml(row[index] || "")}">${escapeHtml(row[index] || "")}</td>`)
+        `<tr>${columnOrder
+          .map((column) => `<td title="${escapeHtml(row[column] || "")}">${escapeHtml(row[column] || "")}</td>`)
           .join("")}</tr>`
     )
     .join("")}</tbody></table>`;
+  if (resizable) {
+    bindColumnResizers(target);
+    bindColumnDrag(target);
+  }
+}
+
+function detailColumnOrder(columnCount) {
+  if (state.detailColumnOrder.length !== columnCount) {
+    state.detailColumnOrder = Array.from({ length: columnCount }, (_, index) => index);
+  }
+  return state.detailColumnOrder;
+}
+
+function bindResultsSplitter() {
+  const splitter = document.getElementById("resultsSplitter");
+  const layout = document.querySelector(".results-layout");
+  if (!splitter || !layout) return;
+
+  splitter.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = document.getElementById("clusterList").getBoundingClientRect().width;
+    document.body.classList.add("is-resizing");
+
+    const onMove = (moveEvent) => {
+      const bounds = layout.getBoundingClientRect();
+      const minWidth = 280;
+      const maxWidth = Math.max(minWidth, bounds.width - 420);
+      state.resultsTreeWidth = Math.min(maxWidth, Math.max(minWidth, startWidth + moveEvent.clientX - startX));
+      applyResultsPaneWidth();
+    };
+
+    const onUp = () => {
+      document.body.classList.remove("is-resizing");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
+}
+
+function applyResultsPaneWidth() {
+  const layout = document.querySelector(".results-layout");
+  if (!layout || !state.resultsTreeWidth) return;
+  const bounds = layout.getBoundingClientRect();
+  const minWidth = 280;
+  const maxWidth = Math.max(minWidth, bounds.width - 420);
+  state.resultsTreeWidth = Math.min(maxWidth, Math.max(minWidth, state.resultsTreeWidth));
+  layout.style.gridTemplateColumns = `${state.resultsTreeWidth}px 8px minmax(0, 1fr)`;
+}
+
+function bindColumnResizers(target) {
+  target.querySelectorAll(".column-resizer").forEach((handle) => {
+    handle.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const column = Number(handle.dataset.column);
+      const position = Number(handle.dataset.position);
+      const table = target.querySelector("table");
+      const col = table?.querySelectorAll("col")[position];
+      const th = handle.closest("th");
+      const startX = event.clientX;
+      const startWidth = state.detailColumnWidths[column] || th.getBoundingClientRect().width;
+      document.body.classList.add("is-resizing");
+
+      const onMove = (moveEvent) => {
+        const width = Math.max(80, startWidth + moveEvent.clientX - startX);
+        state.detailColumnWidths[column] = width;
+        if (col) col.style.width = `${width}px`;
+      };
+
+      const onUp = () => {
+        document.body.classList.remove("is-resizing");
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    });
+  });
+}
+
+function bindColumnDrag(target) {
+  target.querySelectorAll("th[draggable='true']").forEach((header) => {
+    header.addEventListener("dragstart", (event) => {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", header.dataset.column);
+      header.classList.add("dragging");
+    });
+
+    header.addEventListener("dragend", () => {
+      target.querySelectorAll("th").forEach((item) => item.classList.remove("dragging", "drag-over"));
+    });
+
+    header.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      header.classList.add("drag-over");
+    });
+
+    header.addEventListener("dragleave", () => {
+      header.classList.remove("drag-over");
+    });
+
+    header.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const sourceColumn = Number(event.dataTransfer.getData("text/plain"));
+      const targetColumn = Number(header.dataset.column);
+      moveDetailColumn(sourceColumn, targetColumn);
+      renderDetailRows();
+    });
+  });
+}
+
+function moveDetailColumn(sourceColumn, targetColumn) {
+  if (sourceColumn === targetColumn) return;
+  const order = [...state.detailColumnOrder];
+  const sourceIndex = order.indexOf(sourceColumn);
+  const targetIndex = order.indexOf(targetColumn);
+  if (sourceIndex < 0 || targetIndex < 0) return;
+  const [moved] = order.splice(sourceIndex, 1);
+  order.splice(targetIndex, 0, moved);
+  state.detailColumnOrder = order;
 }
 
 function showStep(step) {
