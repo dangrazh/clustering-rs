@@ -16,7 +16,6 @@ http-body-util = "0.1"
 hyper = { version = "1.9", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 rayon = "1.10"
-rfd = "0.15"
 rust_xlsxwriter = "0.94"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -26,8 +25,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"
 
-gpui = "0.2.2"
-gpui-component = "0.5.1"
+# Obsolete dependencies to gpui and file dialogs (commented out for future reference)
+# gpui = "0.2.2"
+# gpui-component = "0.5.1"
+# rfd = "0.15"
 
 [dev-dependencies]
 tempfile = "3.14"
