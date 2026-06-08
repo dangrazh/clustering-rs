@@ -30,6 +30,14 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
 const INDEX_HTML: &str = include_str!("web_assets/index.html");
 const APP_CSS: &str = include_str!("web_assets/app.css");
 const APP_JS: &str = include_str!("web_assets/app.js");
+const ANALYSIS_JS: &str = include_str!("web_assets/analysis.js");
+const API_JS: &str = include_str!("web_assets/api.js");
+const MAPPING_JS: &str = include_str!("web_assets/mapping.js");
+const RESULTS_JS: &str = include_str!("web_assets/results.js");
+const SOURCE_JS: &str = include_str!("web_assets/source.js");
+const STATE_JS: &str = include_str!("web_assets/state.js");
+const UI_JS: &str = include_str!("web_assets/ui.js");
+const UTILS_JS: &str = include_str!("web_assets/utils.js");
 
 #[derive(Clone, Default)]
 struct WebState {
@@ -182,6 +190,46 @@ async fn handle(request: Request<Incoming>, state: WebState) -> Result<Response<
             StatusCode::OK,
             "text/javascript; charset=utf-8",
             APP_JS,
+        )),
+        (Method::GET, "/analysis.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            ANALYSIS_JS,
+        )),
+        (Method::GET, "/api.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            API_JS,
+        )),
+        (Method::GET, "/mapping.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            MAPPING_JS,
+        )),
+        (Method::GET, "/results.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            RESULTS_JS,
+        )),
+        (Method::GET, "/source.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            SOURCE_JS,
+        )),
+        (Method::GET, "/state.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            STATE_JS,
+        )),
+        (Method::GET, "/ui.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            UI_JS,
+        )),
+        (Method::GET, "/utils.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            UTILS_JS,
         )),
         (Method::POST, "/api/import") => import_endpoint(request, state).await,
         (Method::POST, "/api/analyze") => start_analysis_endpoint(request, state).await,

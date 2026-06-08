@@ -1,0 +1,21 @@
+export const state = {
+  source: null,
+  mapping: null,
+  settings: {
+    minimum_cluster_size: 50,
+    similarity_threshold_percent: 42,
+    subgroup_similarity_threshold_percent: 58,
+  },
+  jobId: null,
+  analysis: null,
+  selection: null,
+  expandedClusters: new Set(),
+  detailPage: 1,
+  detailPageSize: 50,
+  resultsTreeWidth: null,
+  detailColumnWidths: [],
+  detailColumnOrder: [],
+  detailColumnFilters: [],
+  detailOpenFilterColumn: null,
+  detailSort: null,
+};
