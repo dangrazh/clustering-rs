@@ -17,6 +17,7 @@
         <button data-step="mapping" disabled>2 Mapping</button>
         <button data-step="analysis" disabled>3 Analysis</button>
         <button data-step="results" disabled>4 Results</button>
+        <button data-step="pivot" disabled>5 Pivot</button>
       </nav>
     </header>
 
@@ -100,6 +101,32 @@
               </div>
             </div>
             <div id="detailTable" class="table-wrap results-table"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="pivot" class="screen">
+        <div class="section-head">
+          <h2>Pivot</h2>
+          <div id="pivotStatus" class="muted">No result loaded.</div>
+        </div>
+        <div class="pivot-layout">
+          <aside class="pivot-fields-panel">
+            <h3>Fields</h3>
+            <div id="pivotFields" class="pivot-fields"></div>
+          </aside>
+          <section class="pivot-workspace">
+            <div class="pivot-areas">
+              <div class="pivot-drop-zone" data-pivot-area="rows">
+                <h3>Rows</h3>
+                <div id="pivotRows" class="pivot-bucket"></div>
+              </div>
+              <div class="pivot-drop-zone" data-pivot-area="columns">
+                <h3>Columns</h3>
+                <div id="pivotColumns" class="pivot-bucket"></div>
+              </div>
+            </div>
+            <div id="pivotTable" class="table-wrap pivot-table"></div>
           </section>
         </div>
       </section>

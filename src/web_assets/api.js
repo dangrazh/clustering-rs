@@ -33,6 +33,15 @@ export async function fetchResult(jobId) {
   return jsonOrThrow(response);
 }
 
+export async function fetchPivot(jobId, rowIndices, rowColumns, columnColumns) {
+  const response = await fetch(`/api/jobs/${jobId}/pivot`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rowIndices, rowColumns, columnColumns }),
+  });
+  return jsonOrThrow(response);
+}
+
 export function exportExcel(jobId) {
   window.location.href = `/api/jobs/${jobId}/export`;
 }

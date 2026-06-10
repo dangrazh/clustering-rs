@@ -18,4 +18,7 @@ export const state = {
   detailColumnFilters: [],
   detailOpenFilterColumn: null,
   detailSort: null,
+  pivotRows: [],
+  pivotColumns: [],
+  pivotRequestId: 0,
 };

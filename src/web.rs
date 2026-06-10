@@ -14,7 +14,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -135,6 +135,30 @@ struct JobSnapshot {
     error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PivotRequest {
+    row_indices: Vec<usize>,
+    row_columns: Vec<usize>,
+    column_columns: Vec<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PivotResponse {
+    record_count: usize,
+    headers: Vec<String>,
+    rows: Vec<PivotResponseRow>,
+    numeric_columns: Vec<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PivotResponseRow {
+    cells: Vec<String>,
+    total: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,
@@ -243,6 +267,9 @@ async fn handle(request: Request<Incoming>, state: WebState) -> Result<Response<
         }
         (Method::GET, path) if path.starts_with("/api/jobs/") && path.ends_with("/result") => {
             result_endpoint(path, state)
+        }
+        (Method::POST, path) if path.starts_with("/api/jobs/") && path.ends_with("/pivot") => {
+            pivot_endpoint(path, request, state).await
         }
         (Method::GET, path) if path.starts_with("/api/jobs/") && path.ends_with("/export") => {
             export_endpoint(path, state).await
@@ -450,6 +477,29 @@ fn result_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody>> {
     Ok(json_response(StatusCode::OK, result)?)
 }
 
+async fn pivot_endpoint(
+    path: &str,
+    request: Request<Incoming>,
+    state: WebState,
+) -> Result<Response<BoxBody>> {
+    let job_id = path
+        .trim_start_matches("/api/jobs/")
+        .trim_end_matches("/pivot")
+        .trim_end_matches('/');
+    let body = request.into_body().collect().await?.to_bytes();
+    let payload: PivotRequest = serde_json::from_slice(&body)?;
+    let analysis = {
+        let jobs = state.inner.jobs.lock().expect("job state poisoned");
+        let job = jobs.get(job_id).context("job not found")?;
+        let job = job.lock().expect("job state poisoned");
+        job.result
+            .clone()
+            .context("analysis result is not ready for pivot")?
+    };
+    let response = build_pivot_response(&analysis, payload)?;
+    Ok(json_response(StatusCode::OK, &response)?)
+}
+
 async fn export_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody>> {
     let job_id = path
         .trim_start_matches("/api/jobs/")
@@ -480,6 +530,218 @@ async fn export_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody
         HeaderValue::from_static("attachment; filename=\"clustered_incidents.xlsx\""),
     );
     Ok(response)
+}
+
+fn build_pivot_response(analysis: &AnalysisRun, request: PivotRequest) -> Result<PivotResponse> {
+    let column_count = analysis.source.headers.len();
+    validate_pivot_columns(&request.row_columns, column_count)?;
+    validate_pivot_columns(&request.column_columns, column_count)?;
+    let row_columns = request.row_columns;
+    let column_columns = request
+        .column_columns
+        .into_iter()
+        .filter(|column| !row_columns.contains(column))
+        .collect::<Vec<_>>();
+    let mut pivot = PivotAccumulator::default();
+
+    for row_index in request.row_indices.iter().copied() {
+        let Some(row) = analysis.source.rows.get(row_index) else {
+            continue;
+        };
+        let row_key = pivot_key(row, &row_columns, "Count");
+        let column_key = pivot_key(row, &column_columns, "Count");
+        pivot.add(row_key, column_key);
+    }
+
+    Ok(pivot.into_response(
+        request.row_indices.len(),
+        &analysis.source.headers,
+        &row_columns,
+        &column_columns,
+    ))
+}
+
+fn validate_pivot_columns(columns: &[usize], column_count: usize) -> Result<()> {
+    for column in columns {
+        anyhow::ensure!(
+            *column < column_count,
+            "pivot column index {column} is out of range"
+        );
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct PivotAccumulator {
+    row_keys: BTreeSet<Vec<String>>,
+    column_keys: BTreeSet<Vec<String>>,
+    counts: BTreeMap<(Vec<String>, Vec<String>), usize>,
+    row_totals: BTreeMap<Vec<String>, usize>,
+    column_totals: BTreeMap<Vec<String>, usize>,
+    grand_total: usize,
+}
+
+impl PivotAccumulator {
+    fn add(&mut self, row_key: Vec<String>, column_key: Vec<String>) {
+        self.row_keys.insert(row_key.clone());
+        self.column_keys.insert(column_key.clone());
+        *self.counts.entry((row_key.clone(), column_key.clone())).or_default() += 1;
+        *self.row_totals.entry(row_key).or_default() += 1;
+        *self.column_totals.entry(column_key).or_default() += 1;
+        self.grand_total += 1;
+    }
+
+    fn into_response(
+        mut self,
+        _record_count: usize,
+        headers: &[String],
+        row_columns: &[usize],
+        column_columns: &[usize],
+    ) -> PivotResponse {
+        if self.row_keys.is_empty() {
+            self.row_keys.insert(vec!["Count".to_owned()]);
+        }
+        if self.column_keys.is_empty() {
+            self.column_keys.insert(vec!["Count".to_owned()]);
+        }
+
+        let row_keys = self.row_keys.into_iter().collect::<Vec<_>>();
+        let column_keys = self.column_keys.into_iter().collect::<Vec<_>>();
+        let mut response_headers = pivot_headers(headers, row_columns, column_columns, &column_keys);
+        let numeric_start = if row_columns.is_empty() { 1 } else { row_columns.len() };
+        let mut numeric_columns = (numeric_start..response_headers.len()).collect::<Vec<_>>();
+        if column_columns.is_empty() && !response_headers.is_empty() {
+            numeric_columns = vec![response_headers.len() - 1];
+        }
+
+        let mut rows = Vec::with_capacity(row_keys.len() + usize::from(!row_columns.is_empty()));
+        let mut previous_row_key: Option<&[String]> = None;
+        for row_key in &row_keys {
+            let mut cells = display_row_key(row_key, previous_row_key, row_columns.is_empty());
+            for column_key in &column_keys {
+                cells.push(
+                    self.counts
+                        .get(&(row_key.clone(), column_key.clone()))
+                        .copied()
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+            }
+            if !column_columns.is_empty() {
+                cells.push(self.row_totals.get(row_key).copied().unwrap_or_default().to_string());
+            }
+            rows.push(PivotResponseRow { cells, total: false });
+            previous_row_key = Some(row_key);
+        }
+
+        if !row_columns.is_empty() {
+            let mut total_cells = vec![String::new(); row_columns.len().saturating_sub(1)];
+            total_cells.insert(0, "Total".to_owned());
+            if column_columns.is_empty() {
+                total_cells.push(self.grand_total.to_string());
+            } else {
+                for column_key in &column_keys {
+                    total_cells.push(
+                        self.column_totals
+                            .get(column_key)
+                            .copied()
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+                total_cells.push(self.grand_total.to_string());
+            }
+            rows.push(PivotResponseRow {
+                cells: total_cells,
+                total: true,
+            });
+        }
+
+        if response_headers.is_empty() {
+            response_headers.push("Count".to_owned());
+            numeric_columns.push(0);
+        }
+
+        PivotResponse {
+            record_count: self.grand_total,
+            headers: response_headers,
+            rows,
+            numeric_columns,
+        }
+    }
+}
+
+fn pivot_headers(
+    headers: &[String],
+    row_columns: &[usize],
+    column_columns: &[usize],
+    column_keys: &[Vec<String>],
+) -> Vec<String> {
+    let mut response_headers = if row_columns.is_empty() {
+        vec!["Summary".to_owned()]
+    } else {
+        row_columns
+            .iter()
+            .map(|column| headers[*column].clone())
+            .collect::<Vec<_>>()
+    };
+    if column_columns.is_empty() {
+        response_headers.push("Count".to_owned());
+    } else {
+        response_headers.extend(column_keys.iter().map(|key| key.join(" / ")));
+        response_headers.push("Total".to_owned());
+    }
+    response_headers
+}
+
+fn pivot_key(row: &[String], columns: &[usize], fallback: &str) -> Vec<String> {
+    if columns.is_empty() {
+        return vec![fallback.to_owned()];
+    }
+    columns
+        .iter()
+        .map(|column| {
+            row.get(*column)
+                .map(|value| {
+                    let value = value.trim();
+                    if value.is_empty() {
+                        "(blank)".to_owned()
+                    } else {
+                        value.to_owned()
+                    }
+                })
+                .unwrap_or_else(|| "(blank)".to_owned())
+        })
+        .collect()
+}
+
+fn display_row_key(
+    row_key: &[String],
+    previous_row_key: Option<&[String]>,
+    summary_row: bool,
+) -> Vec<String> {
+    if summary_row {
+        return vec![row_key.join(" / ")];
+    }
+    row_key
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let repeated_parent_path = previous_row_key.is_some_and(|previous| {
+                previous.len() > index
+                    && previous[..=index]
+                        .iter()
+                        .zip(&row_key[..=index])
+                        .all(|(left, right)| left == right)
+            });
+            if repeated_parent_path
+            {
+                String::new()
+            } else {
+                value.clone()
+            }
+        })
+        .collect()
 }
 
 fn record_progress(job: &Arc<Mutex<AnalysisJob>>, progress: ProgressUpdate) {

@@ -1,4 +1,4 @@
-import { exportExcel, fetchResult } from "./api.js";
+import { exportExcel, fetchPivot, fetchResult } from "./api.js";
 import { state } from "./state.js";
 import { downloadJson, showStep, statsHtml } from "./ui.js";
 import { clusterId, clusterKey, escapeHtml, sameSelection } from "./utils.js";
@@ -34,6 +34,8 @@ export function bindResultsEvents() {
     }
   });
 
+  document.querySelector('[data-step="pivot"]').addEventListener("click", () => renderPivot());
+
   document.addEventListener("click", (event) => {
     if (state.detailOpenFilterColumn == null || event.target.closest(".column-filter-menu, .column-filter-button")) return;
     state.detailOpenFilterColumn = null;
@@ -53,7 +55,10 @@ export async function loadResult(jobId) {
   state.detailColumnFilters = [];
   state.detailOpenFilterColumn = null;
   state.detailSort = null;
+  state.pivotRows = [];
+  state.pivotColumns = [];
   document.querySelector('[data-step="results"]').disabled = false;
+  document.querySelector('[data-step="pivot"]').disabled = false;
   renderResults();
   showStep("results");
 }
@@ -69,6 +74,7 @@ function renderResults() {
   ]);
   renderClusterList();
   renderDetailRows();
+  renderPivot();
 }
 
 function renderClusterList() {
@@ -129,6 +135,7 @@ function addClusterButton(list, text, selection, extraClass = "") {
     state.detailPage = 1;
     renderClusterList();
     renderDetailRows();
+    renderPivot();
   });
   list.appendChild(button);
 }
@@ -147,6 +154,7 @@ function renderDetailRows(focusFilterColumn = null, focusTarget = "search") {
   renderResultsTable("detailTable", run.source.headers, rows);
   if (focusFilterColumn != null) restoreFilterFocus(focusFilterColumn, focusTarget);
   renderPagination(totalRows, start, rows.length, totalPages);
+  renderPivot();
 }
 
 function detailRowIndices() {
@@ -264,6 +272,140 @@ function renderResultsTable(targetId, headers, rows) {
   bindColumnControls(target);
   bindColumnResizers(target);
   bindColumnDrag(target);
+}
+
+function renderPivot() {
+  const run = state.analysis;
+  if (!run) return;
+  syncPivotState(run.source.headers.length);
+  renderPivotFields(run.source.headers);
+  renderPivotBuckets(run.source.headers);
+  renderPivotTable();
+  bindPivotDrag();
+}
+
+function syncPivotState(columnCount) {
+  const valid = (column) => Number.isInteger(column) && column >= 0 && column < columnCount;
+  state.pivotRows = state.pivotRows.filter(valid);
+  state.pivotColumns = state.pivotColumns.filter(valid).filter((column) => !state.pivotRows.includes(column));
+}
+
+function renderPivotFields(headers) {
+  const usedColumns = new Set([...state.pivotRows, ...state.pivotColumns]);
+  document.getElementById("pivotFields").innerHTML = headers
+    .map(
+      (header, column) =>
+        `<button class="pivot-field${usedColumns.has(column) ? " used" : ""}" type="button" draggable="true" data-column="${column}" title="${escapeHtml(
+          header
+        )}">${escapeHtml(header)}</button>`
+    )
+    .join("");
+}
+
+function renderPivotBuckets(headers) {
+  document.getElementById("pivotRows").innerHTML = renderPivotBucketItems(state.pivotRows, headers, "rows");
+  document.getElementById("pivotColumns").innerHTML = renderPivotBucketItems(state.pivotColumns, headers, "columns");
+}
+
+function renderPivotBucketItems(columns, headers, area) {
+  if (!columns.length) return `<div class="pivot-empty">Drop fields here</div>`;
+  return columns
+    .map(
+      (column) =>
+        `<span class="pivot-chip" draggable="true" data-column="${column}" data-area="${area}" title="${escapeHtml(headers[column])}">
+          <span>${escapeHtml(headers[column])}</span>
+          <button class="pivot-remove" type="button" data-column="${column}" data-area="${area}" aria-label="Remove ${escapeHtml(
+          headers[column]
+        )}">x</button>
+        </span>`
+    )
+    .join("");
+}
+
+async function renderPivotTable() {
+  const rowIndices = visibleDetailRowIndices();
+  const requestId = ++state.pivotRequestId;
+  document.getElementById("pivotStatus").textContent = `${rowIndices.length} records summarized`;
+  const target = document.getElementById("pivotTable");
+  if (!state.pivotRows.length && !state.pivotColumns.length) {
+    target.innerHTML = `<div class="pivot-placeholder">Drag fields to Rows or Columns.</div>`;
+    return;
+  }
+
+  target.innerHTML = `<div class="pivot-placeholder">Calculating pivot...</div>`;
+  try {
+    const pivot = await fetchPivot(state.jobId, rowIndices, state.pivotRows, state.pivotColumns);
+    if (requestId !== state.pivotRequestId) return;
+    document.getElementById("pivotStatus").textContent = `${pivot.recordCount} records summarized`;
+    renderPivotResponse(target, pivot);
+  } catch (error) {
+    if (requestId !== state.pivotRequestId) return;
+    target.innerHTML = `<div class="pivot-placeholder">Pivot failed: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderPivotResponse(target, pivot) {
+  const numericColumns = new Set(pivot.numericColumns || []);
+  target.innerHTML = `<table><thead><tr>${pivot.headers
+    .map((header, column) => `<th class="${numericColumns.has(column) ? "numeric" : ""}">${escapeHtml(header)}</th>`)
+    .join("")}</tr></thead><tbody>${pivot.rows
+    .map(
+      (row) =>
+        `<tr class="${row.total ? "pivot-total-row" : ""}">${row.cells
+          .map(
+            (cell, column) =>
+              `<td class="${numericColumns.has(column) ? "numeric" : ""}" title="${escapeHtml(cell)}">${escapeHtml(cell)}</td>`
+          )
+          .join("")}</tr>`
+    )
+    .join("")}</tbody></table>`;
+}
+
+function bindPivotDrag() {
+  document.querySelectorAll(".pivot-field, .pivot-chip").forEach((item) => {
+    item.addEventListener("dragstart", (event) => {
+      if (event.target.closest(".pivot-remove")) {
+        event.preventDefault();
+        return;
+      }
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", item.dataset.column);
+    });
+  });
+
+  document.querySelectorAll(".pivot-drop-zone").forEach((zone) => {
+    zone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      zone.classList.add("drag-over");
+    });
+    zone.addEventListener("dragleave", () => zone.classList.remove("drag-over"));
+    zone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      zone.classList.remove("drag-over");
+      const column = Number(event.dataTransfer.getData("text/plain"));
+      movePivotField(column, zone.dataset.pivotArea);
+    });
+  });
+
+  document.querySelectorAll(".pivot-remove").forEach((button) => {
+    button.addEventListener("click", () => removePivotField(Number(button.dataset.column), button.dataset.area));
+  });
+}
+
+function movePivotField(column, area) {
+  if (!Number.isInteger(column)) return;
+  state.pivotRows = state.pivotRows.filter((item) => item !== column);
+  state.pivotColumns = state.pivotColumns.filter((item) => item !== column);
+  if (area === "rows") state.pivotRows.push(column);
+  if (area === "columns") state.pivotColumns.push(column);
+  renderPivot();
+}
+
+function removePivotField(column, area) {
+  if (area === "rows") state.pivotRows = state.pivotRows.filter((item) => item !== column);
+  if (area === "columns") state.pivotColumns = state.pivotColumns.filter((item) => item !== column);
+  renderPivot();
 }
 
 function detailColumnOrder(columnCount) {
@@ -503,7 +645,7 @@ function bindColumnControls(target) {
     });
   });
 
-  target.querySelectorAll(".column-filter-option input").forEach((checkbox) => {
+  target.querySelectorAll(".column-filter-option input:not(.filter-select-visible)").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       const column = Number(checkbox.dataset.column);
       setDetailFilterValue(column, checkbox.value, checkbox.checked);
