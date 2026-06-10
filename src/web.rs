@@ -157,6 +157,7 @@ struct PivotResponse {
 struct PivotResponseRow {
     cells: Vec<String>,
     total: bool,
+    row_indices: Vec<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -550,7 +551,7 @@ fn build_pivot_response(analysis: &AnalysisRun, request: PivotRequest) -> Result
         };
         let row_key = pivot_key(row, &row_columns, "Count");
         let column_key = pivot_key(row, &column_columns, "Count");
-        pivot.add(row_key, column_key);
+        pivot.add(row_index, row_key, column_key);
     }
 
     Ok(pivot.into_response(
@@ -578,16 +579,20 @@ struct PivotAccumulator {
     counts: BTreeMap<(Vec<String>, Vec<String>), usize>,
     row_totals: BTreeMap<Vec<String>, usize>,
     column_totals: BTreeMap<Vec<String>, usize>,
+    row_members: BTreeMap<Vec<String>, Vec<usize>>,
+    all_members: Vec<usize>,
     grand_total: usize,
 }
 
 impl PivotAccumulator {
-    fn add(&mut self, row_key: Vec<String>, column_key: Vec<String>) {
+    fn add(&mut self, row_index: usize, row_key: Vec<String>, column_key: Vec<String>) {
         self.row_keys.insert(row_key.clone());
         self.column_keys.insert(column_key.clone());
         *self.counts.entry((row_key.clone(), column_key.clone())).or_default() += 1;
-        *self.row_totals.entry(row_key).or_default() += 1;
+        *self.row_totals.entry(row_key.clone()).or_default() += 1;
         *self.column_totals.entry(column_key).or_default() += 1;
+        self.row_members.entry(row_key).or_default().push(row_index);
+        self.all_members.push(row_index);
         self.grand_total += 1;
     }
 
@@ -630,7 +635,15 @@ impl PivotAccumulator {
             if !column_columns.is_empty() {
                 cells.push(self.row_totals.get(row_key).copied().unwrap_or_default().to_string());
             }
-            rows.push(PivotResponseRow { cells, total: false });
+            rows.push(PivotResponseRow {
+                cells,
+                total: false,
+                row_indices: self
+                    .row_members
+                    .get(row_key)
+                    .cloned()
+                    .unwrap_or_default(),
+            });
             previous_row_key = Some(row_key);
         }
 
@@ -654,6 +667,7 @@ impl PivotAccumulator {
             rows.push(PivotResponseRow {
                 cells: total_cells,
                 total: true,
+                row_indices: self.all_members.clone(),
             });
         }
 

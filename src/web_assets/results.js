@@ -13,6 +13,14 @@ export function bindResultsEvents() {
     if (state.jobId) exportExcel(state.jobId);
   });
 
+  document.getElementById("clearDrilldown").addEventListener("click", () => {
+    clearDetailDrilldown();
+  });
+
+  document.getElementById("showPivotRecords").addEventListener("click", () => {
+    applySelectedPivotDrilldown();
+  });
+
   document.getElementById("pageSize").addEventListener("change", (event) => {
     state.detailPageSize = Number(event.target.value);
     state.detailPage = 1;
@@ -37,6 +45,7 @@ export function bindResultsEvents() {
   document.querySelector('[data-step="pivot"]').addEventListener("click", () => renderPivot());
 
   document.addEventListener("click", (event) => {
+    if (!event.target.closest(".pivot-context-menu")) hidePivotContextMenu();
     if (state.detailOpenFilterColumn == null || event.target.closest(".column-filter-menu, .column-filter-button")) return;
     state.detailOpenFilterColumn = null;
     renderDetailRows();
@@ -55,8 +64,13 @@ export async function loadResult(jobId) {
   state.detailColumnFilters = [];
   state.detailOpenFilterColumn = null;
   state.detailSort = null;
+  state.detailDrilldownRowIndices = null;
+  state.detailDrilldownLabel = "";
   state.pivotRows = [];
   state.pivotColumns = [];
+  state.currentPivotRows = [];
+  state.selectedPivotRowIndices = null;
+  state.selectedPivotRowLabel = "";
   document.querySelector('[data-step="results"]').disabled = false;
   document.querySelector('[data-step="pivot"]').disabled = false;
   renderResults();
@@ -79,9 +93,12 @@ function renderResults() {
 
 function renderClusterList() {
   const list = document.getElementById("clusterList");
+  const drilldownRows = activeDrilldownRows();
   list.innerHTML = "";
-  addClusterButton(list, "All incidents", { type: "all" });
+  addClusterButton(list, drilldownRows ? `All incidents (${drilldownRows.size})` : "All incidents", { type: "all" });
   state.analysis.clusters.forEach((cluster) => {
+    const clusterCount = filteredIncidentCount(cluster.incident_row_indices, drilldownRows);
+    if (drilldownRows && clusterCount === 0) return;
     const key = clusterKey(cluster.id);
     const expanded = state.expandedClusters.has(key);
     const row = document.createElement("div");
@@ -106,7 +123,7 @@ function renderClusterList() {
     row.appendChild(toggle);
     addClusterButton(
       row,
-      `${clusterId(cluster.id)} - ${cluster.label} (${cluster.incident_row_indices.length})`,
+      `${clusterId(cluster.id)} - ${cluster.label} (${clusterCount})`,
       { type: "cluster", cluster: cluster.id },
       "cluster-label"
     );
@@ -114,15 +131,26 @@ function renderClusterList() {
 
     if (expanded) {
       cluster.subgroups.forEach((theme) => {
+        const themeCount = filteredIncidentCount(theme.incident_row_indices, drilldownRows);
+        if (drilldownRows && themeCount === 0) return;
         addClusterButton(
           list,
-          `Theme ${theme.id} - ${theme.label} (${theme.incident_row_indices.length})`,
+          `Theme ${theme.id} - ${theme.label} (${themeCount})`,
           { type: "theme", cluster: cluster.id, theme: theme.id },
           "theme"
         );
       });
     }
   });
+}
+
+function activeDrilldownRows() {
+  return Array.isArray(state.detailDrilldownRowIndices) ? new Set(state.detailDrilldownRowIndices) : null;
+}
+
+function filteredIncidentCount(rowIndices, drilldownRows) {
+  if (!drilldownRows) return rowIndices.length;
+  return rowIndices.reduce((count, rowIndex) => count + Number(drilldownRows.has(rowIndex)), 0);
 }
 
 function addClusterButton(list, text, selection, extraClass = "") {
@@ -154,6 +182,7 @@ function renderDetailRows(focusFilterColumn = null, focusTarget = "search") {
   renderResultsTable("detailTable", run.source.headers, rows);
   if (focusFilterColumn != null) restoreFilterFocus(focusFilterColumn, focusTarget);
   renderPagination(totalRows, start, rows.length, totalPages);
+  renderDrilldownState();
   renderPivot();
 }
 
@@ -178,6 +207,7 @@ function visibleDetailRowIndices() {
   if (!run) return [];
   let rowIndices = detailRowIndices();
   rowIndices = applyDetailFilters(rowIndices, run.source.rows);
+  rowIndices = applyDetailDrilldown(rowIndices);
   return applyDetailSort(rowIndices, run.source.rows);
 }
 
@@ -190,6 +220,12 @@ function applyDetailFilters(rowIndices, rows) {
     const row = rows[rowIndex] || [];
     return filters.every(({ column, selectedValues }) => selectedValues.has(detailCellValue(row[column])));
   });
+}
+
+function applyDetailDrilldown(rowIndices) {
+  if (!Array.isArray(state.detailDrilldownRowIndices)) return rowIndices;
+  const drilldownRows = new Set(state.detailDrilldownRowIndices);
+  return rowIndices.filter((rowIndex) => drilldownRows.has(rowIndex));
 }
 
 function applyDetailSort(rowIndices, rows) {
@@ -222,6 +258,19 @@ function renderPagination(totalRows, start, shownRows, totalPages) {
     `${first}-${last} of ${totalRows} records, page ${state.detailPage} of ${totalPages}`;
   document.getElementById("previousPage").disabled = state.detailPage <= 1;
   document.getElementById("nextPage").disabled = state.detailPage >= totalPages;
+}
+
+function renderDrilldownState() {
+  const button = document.getElementById("clearDrilldown");
+  const active = Array.isArray(state.detailDrilldownRowIndices);
+  button.classList.toggle("hidden", !active);
+  if (active) {
+    button.textContent = `Clear Detail Filter (${state.detailDrilldownRowIndices.length})`;
+    button.title = state.detailDrilldownLabel ? `Clear ${state.detailDrilldownLabel}` : "Clear detail filter";
+  } else {
+    button.textContent = "Clear Detail Filter";
+    button.removeAttribute("title");
+  }
 }
 
 function renderResultsTable(targetId, headers, rows) {
@@ -346,12 +395,13 @@ async function renderPivotTable() {
 
 function renderPivotResponse(target, pivot) {
   const numericColumns = new Set(pivot.numericColumns || []);
+  state.currentPivotRows = pivot.rows || [];
   target.innerHTML = `<table><thead><tr>${pivot.headers
     .map((header, column) => `<th class="${numericColumns.has(column) ? "numeric" : ""}">${escapeHtml(header)}</th>`)
     .join("")}</tr></thead><tbody>${pivot.rows
     .map(
-      (row) =>
-        `<tr class="${row.total ? "pivot-total-row" : ""}">${row.cells
+      (row, rowIndex) =>
+        `<tr class="pivot-data-row${row.total ? " pivot-total-row" : ""}" data-pivot-row="${rowIndex}" tabindex="0">${row.cells
           .map(
             (cell, column) =>
               `<td class="${numericColumns.has(column) ? "numeric" : ""}" title="${escapeHtml(cell)}">${escapeHtml(cell)}</td>`
@@ -359,6 +409,70 @@ function renderPivotResponse(target, pivot) {
           .join("")}</tr>`
     )
     .join("")}</tbody></table>`;
+  bindPivotRowSelection(target);
+}
+
+function bindPivotRowSelection(target) {
+  target.querySelectorAll(".pivot-data-row").forEach((row) => {
+    row.addEventListener("click", () => selectPivotRow(row));
+    row.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      selectPivotRow(row);
+      showPivotContextMenu(event.clientX, event.clientY);
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        selectPivotRow(row);
+        applySelectedPivotDrilldown();
+      }
+    });
+  });
+}
+
+function selectPivotRow(row) {
+  document.querySelectorAll(".pivot-data-row.selected").forEach((item) => item.classList.remove("selected"));
+  row.classList.add("selected");
+  const pivotRow = state.currentPivotRows[Number(row.dataset.pivotRow)];
+  state.selectedPivotRowIndices = pivotRow?.rowIndices || [];
+  state.selectedPivotRowLabel = pivotRowLabel(pivotRow);
+}
+
+function pivotRowLabel(row) {
+  if (!row) return "selected pivot row";
+  if (row.total) return "pivot total";
+  const label = row.cells.filter((cell) => String(cell || "").trim()).slice(0, 3).join(" / ");
+  return label || "selected pivot row";
+}
+
+function showPivotContextMenu(x, y) {
+  const menu = document.getElementById("pivotContextMenu");
+  menu.classList.remove("hidden");
+  const bounds = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(x, window.innerWidth - bounds.width - 8)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - bounds.height - 8)}px`;
+}
+
+function hidePivotContextMenu() {
+  document.getElementById("pivotContextMenu")?.classList.add("hidden");
+}
+
+function applySelectedPivotDrilldown() {
+  if (!Array.isArray(state.selectedPivotRowIndices)) return;
+  state.detailDrilldownRowIndices = [...state.selectedPivotRowIndices];
+  state.detailDrilldownLabel = state.selectedPivotRowLabel;
+  state.detailPage = 1;
+  hidePivotContextMenu();
+  renderClusterList();
+  renderDetailRows();
+  showStep("results");
+}
+
+function clearDetailDrilldown() {
+  state.detailDrilldownRowIndices = null;
+  state.detailDrilldownLabel = "";
+  state.detailPage = 1;
+  renderClusterList();
+  renderDetailRows();
 }
 
 function bindPivotDrag() {

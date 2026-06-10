@@ -18,7 +18,12 @@ export const state = {
   detailColumnFilters: [],
   detailOpenFilterColumn: null,
   detailSort: null,
+  detailDrilldownRowIndices: null,
+  detailDrilldownLabel: "",
   pivotRows: [],
   pivotColumns: [],
   pivotRequestId: 0,
+  currentPivotRows: [],
+  selectedPivotRowIndices: null,
+  selectedPivotRowLabel: "",
 };

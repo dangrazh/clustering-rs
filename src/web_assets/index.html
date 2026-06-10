@@ -86,6 +86,7 @@
             <div class="detail-controls">
               <div id="pageStatus" class="muted">No records selected.</div>
               <div class="toolbar">
+                <button id="clearDrilldown" class="hidden" type="button">Clear Detail Filter</button>
                 <label class="page-size">
                   Rows per page
                   <select id="pageSize">
@@ -128,6 +129,9 @@
             </div>
             <div id="pivotTable" class="table-wrap pivot-table"></div>
           </section>
+        </div>
+        <div id="pivotContextMenu" class="pivot-context-menu hidden" role="menu">
+          <button id="showPivotRecords" type="button" role="menuitem">Show underlying records</button>
         </div>
       </section>
     </main>
