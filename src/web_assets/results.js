@@ -1,12 +1,32 @@
-import { exportExcel, fetchPivot, fetchResult } from "./api.js";
+import { exportExcel, fetchPivot, fetchResult, restoreSession } from "./api.js";
 import { state } from "./state.js";
-import { downloadJson, showStep, statsHtml } from "./ui.js";
+import { downloadJson, setStatus, showStep, statsHtml } from "./ui.js";
 import { clusterId, clusterKey, escapeHtml, sameSelection } from "./utils.js";
 
 export function bindResultsEvents() {
   document.getElementById("downloadSession").addEventListener("click", () => {
     if (!state.analysis) return;
-    downloadJson("incident_analysis_session.json", { version: 1, run: state.analysis });
+    downloadJson("incident_analysis_session.json", { version: 2, run: state.analysis, reviewState: reviewStatePayload() });
+  });
+
+  document.getElementById("downloadReviewState").addEventListener("click", () => {
+    if (!state.analysis) return;
+    downloadJson("incident_review_state.json", { version: 1, reviewState: reviewStatePayload() });
+  });
+
+  document.getElementById("reviewStateInput").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text());
+      applyReviewState(payload.reviewState || payload);
+      renderClusterList();
+      setStatus(`Loaded review state from ${file.name}.`);
+    } catch (error) {
+      setStatus(error.message, true);
+    } finally {
+      event.target.value = "";
+    }
   });
 
   document.getElementById("exportExcel").addEventListener("click", () => {
@@ -55,9 +75,30 @@ export function bindResultsEvents() {
 }
 
 export async function loadResult(jobId) {
-  state.analysis = await fetchResult(jobId);
+  initializeResult(await fetchResult(jobId), jobId);
+  renderResults();
+  showStep("results");
+}
+
+export async function loadSavedSession(payload) {
+  const run = payload?.run;
+  if (!run?.source?.headers || !Array.isArray(run.source.rows)) throw new Error("Session file is invalid.");
+  const restored = await restoreSession(run);
+  initializeResult(run, restored.jobId, payload.reviewState);
+  renderResults();
+  showStep("results");
+}
+
+function initializeResult(run, jobId, reviewState = null) {
+  state.analysis = run;
+  state.source = null;
+  state.mapping = run.mapping || null;
+  state.jobId = jobId;
   state.selection = { type: "all" };
   state.expandedClusters = new Set();
+  state.reviewedClusters = new Set();
+  state.reviewedThemes = new Set();
+  if (reviewState) applyReviewState(reviewState);
   state.detailPage = 1;
   state.detailColumnWidths = [];
   state.detailColumnOrder = [];
@@ -71,10 +112,10 @@ export async function loadResult(jobId) {
   state.currentPivotRows = [];
   state.selectedPivotRowIndices = null;
   state.selectedPivotRowLabel = "";
+  document.querySelector('[data-step="mapping"]').disabled = true;
+  document.querySelector('[data-step="analysis"]').disabled = true;
   document.querySelector('[data-step="results"]').disabled = false;
   document.querySelector('[data-step="pivot"]').disabled = false;
-  renderResults();
-  showStep("results");
 }
 
 function renderResults() {
@@ -121,24 +162,31 @@ function renderClusterList() {
     });
 
     row.appendChild(toggle);
+    const clusterSelection = { type: "cluster", cluster: cluster.id };
     addClusterButton(
       row,
       `${clusterId(cluster.id)} - ${cluster.label} (${clusterCount})`,
-      { type: "cluster", cluster: cluster.id },
+      clusterSelection,
       "cluster-label"
     );
+    row.appendChild(reviewToggleButton("cluster", clusterSelection, isReviewed("cluster", clusterSelection)));
     list.appendChild(row);
 
     if (expanded) {
       cluster.subgroups.forEach((theme) => {
         const themeCount = filteredIncidentCount(theme.incident_row_indices, drilldownRows);
         if (drilldownRows && themeCount === 0) return;
+        const themeSelection = { type: "theme", cluster: cluster.id, theme: theme.id };
+        const themeRow = document.createElement("div");
+        themeRow.className = "tree-row theme-row";
         addClusterButton(
-          list,
+          themeRow,
           `Theme ${theme.id} - ${theme.label} (${themeCount})`,
-          { type: "theme", cluster: cluster.id, theme: theme.id },
+          themeSelection,
           "theme"
         );
+        themeRow.appendChild(reviewToggleButton("theme", themeSelection, isReviewed("theme", themeSelection)));
+        list.appendChild(themeRow);
       });
     }
   });
@@ -156,6 +204,7 @@ function filteredIncidentCount(rowIndices, drilldownRows) {
 function addClusterButton(list, text, selection, extraClass = "") {
   const button = document.createElement("button");
   button.className = `cluster-item ${extraClass}`;
+  if (isReviewed(selection.type, selection)) button.classList.add("reviewed");
   if (sameSelection(selection, state.selection)) button.classList.add("active");
   button.textContent = text;
   button.addEventListener("click", () => {
@@ -166,6 +215,59 @@ function addClusterButton(list, text, selection, extraClass = "") {
     renderPivot();
   });
   list.appendChild(button);
+  return button;
+}
+
+function reviewToggleButton(type, selection, reviewed) {
+  const button = document.createElement("button");
+  button.className = `review-toggle${reviewed ? " reviewed" : ""}`;
+  button.type = "button";
+  button.textContent = reviewed ? "Reviewed" : "Review";
+  button.setAttribute("aria-pressed", String(reviewed));
+  button.setAttribute("aria-label", `${reviewed ? "Clear reviewed state for" : "Mark reviewed"} ${type}`);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleReviewed(type, selection);
+  });
+  return button;
+}
+
+function isReviewed(type, selection) {
+  if (type === "cluster") return state.reviewedClusters.has(reviewClusterKey(selection.cluster));
+  if (type === "theme") return state.reviewedThemes.has(reviewThemeKey(selection.cluster, selection.theme));
+  return false;
+}
+
+function toggleReviewed(type, selection) {
+  const set = type === "cluster" ? state.reviewedClusters : state.reviewedThemes;
+  const key = type === "cluster" ? reviewClusterKey(selection.cluster) : reviewThemeKey(selection.cluster, selection.theme);
+  if (set.has(key)) {
+    set.delete(key);
+  } else {
+    set.add(key);
+  }
+  renderClusterList();
+}
+
+function reviewClusterKey(cluster) {
+  return clusterKey(cluster);
+}
+
+function reviewThemeKey(cluster, theme) {
+  return `${clusterKey(cluster)}:${theme}`;
+}
+
+function reviewStatePayload() {
+  return {
+    reviewedClusters: [...state.reviewedClusters].sort(),
+    reviewedThemes: [...state.reviewedThemes].sort(),
+  };
+}
+
+function applyReviewState(payload) {
+  if (!payload || typeof payload !== "object") throw new Error("Review state file is invalid.");
+  state.reviewedClusters = new Set(Array.isArray(payload.reviewedClusters) ? payload.reviewedClusters.map(String) : []);
+  state.reviewedThemes = new Set(Array.isArray(payload.reviewedThemes) ? payload.reviewedThemes.map(String) : []);
 }
 
 function renderDetailRows(focusFilterColumn = null, focusTarget = "search") {
@@ -279,6 +381,7 @@ function renderResultsTable(targetId, headers, rows) {
     target.innerHTML = "";
     return;
   }
+  const incidentNumberColumn = state.analysis?.mapping?.incident_number;
   const columnOrder = detailColumnOrder(headers.length);
   const colgroup = `<colgroup>${columnOrder
     .map((column) => {
@@ -314,13 +417,23 @@ function renderResultsTable(targetId, headers, rows) {
     .map(
       (row) =>
         `<tr>${columnOrder
-          .map((column) => `<td title="${escapeHtml(row[column] || "")}">${escapeHtml(row[column] || "")}</td>`)
+          .map((column) => renderDetailCell(row, column, incidentNumberColumn))
           .join("")}</tr>`
     )
     .join("")}</tbody></table>`;
   bindColumnControls(target);
   bindColumnResizers(target);
   bindColumnDrag(target);
+}
+
+function renderDetailCell(row, column, incidentNumberColumn) {
+  const value = row[column] || "";
+  const text = escapeHtml(value);
+  if (column !== incidentNumberColumn || !value) {
+    return `<td title="${text}">${text}</td>`;
+  }
+  const href = `https://goto/snow-id/${encodeURIComponent(value)}`;
+  return `<td title="${text}"><a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${text}</a></td>`;
 }
 
 function renderPivot() {

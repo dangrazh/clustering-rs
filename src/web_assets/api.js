@@ -33,6 +33,15 @@ export async function fetchResult(jobId) {
   return jsonOrThrow(response);
 }
 
+export async function restoreSession(run) {
+  const response = await fetch("/api/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ run }),
+  });
+  return jsonOrThrow(response);
+}
+
 export async function fetchPivot(jobId, rowIndices, rowColumns, columnColumns) {
   const response = await fetch(`/api/jobs/${jobId}/pivot`, {
     method: "POST",

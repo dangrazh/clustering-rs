@@ -118,6 +118,12 @@ struct StartAnalysisRequest {
     settings: RunSettings,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreSessionRequest {
+    run: AnalysisRun,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StartAnalysisResponse {
@@ -257,6 +263,7 @@ async fn handle(request: Request<Incoming>, state: WebState) -> Result<Response<
             UTILS_JS,
         )),
         (Method::POST, "/api/import") => import_endpoint(request, state).await,
+        (Method::POST, "/api/sessions") => restore_session_endpoint(request, state).await,
         (Method::POST, "/api/analyze") => start_analysis_endpoint(request, state).await,
         (Method::GET, path)
             if path.starts_with("/api/sources/") && path.ends_with("/worksheet") =>
@@ -395,6 +402,46 @@ async fn start_analysis_endpoint(
     )?)
 }
 
+async fn restore_session_endpoint(
+    request: Request<Incoming>,
+    state: WebState,
+) -> Result<Response<BoxBody>> {
+    let body = request.into_body().collect().await?.to_bytes();
+    let payload: RestoreSessionRequest = serde_json::from_slice(&body)?;
+    anyhow::ensure!(
+        !payload.run.source.headers.is_empty(),
+        "session source headers are missing"
+    );
+
+    let job_id = state.next_id("job");
+    let (sender, _) = broadcast::channel(1);
+    let summary = analysis_summary(&payload.run);
+    let job = Arc::new(Mutex::new(AnalysisJob {
+        status: JobStatus::Finished,
+        message: format!(
+            "Session loaded: {} clusters, {} ignored rows.",
+            summary.clusters, summary.ignored_rows
+        ),
+        started_at: Instant::now(),
+        finished_at: Some(Instant::now()),
+        progress_log: Vec::new(),
+        result: Some(payload.run),
+        error: None,
+        events: sender,
+    }));
+    state
+        .inner
+        .jobs
+        .lock()
+        .expect("job state poisoned")
+        .insert(job_id.clone(), job);
+
+    Ok(json_response(
+        StatusCode::OK,
+        &StartAnalysisResponse { job_id },
+    )?)
+}
+
 fn events_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody>> {
     let job_id = path
         .trim_start_matches("/api/jobs/")
@@ -489,15 +536,16 @@ async fn pivot_endpoint(
         .trim_end_matches('/');
     let body = request.into_body().collect().await?.to_bytes();
     let payload: PivotRequest = serde_json::from_slice(&body)?;
-    let analysis = {
+    let response = {
         let jobs = state.inner.jobs.lock().expect("job state poisoned");
         let job = jobs.get(job_id).context("job not found")?;
         let job = job.lock().expect("job state poisoned");
-        job.result
-            .clone()
-            .context("analysis result is not ready for pivot")?
+        let analysis = job
+            .result
+            .as_ref()
+            .context("analysis result is not ready for pivot")?;
+        build_pivot_response(analysis, payload)?
     };
-    let response = build_pivot_response(&analysis, payload)?;
     Ok(json_response(StatusCode::OK, &response)?)
 }
 
@@ -578,6 +626,7 @@ struct PivotAccumulator {
     column_keys: BTreeSet<Vec<String>>,
     counts: BTreeMap<(Vec<String>, Vec<String>), usize>,
     row_totals: BTreeMap<Vec<String>, usize>,
+    row_prefix_totals: BTreeMap<Vec<String>, usize>,
     column_totals: BTreeMap<Vec<String>, usize>,
     row_members: BTreeMap<Vec<String>, Vec<usize>>,
     all_members: Vec<usize>,
@@ -590,6 +639,12 @@ impl PivotAccumulator {
         self.column_keys.insert(column_key.clone());
         *self.counts.entry((row_key.clone(), column_key.clone())).or_default() += 1;
         *self.row_totals.entry(row_key.clone()).or_default() += 1;
+        for prefix_len in 1..=row_key.len() {
+            *self
+                .row_prefix_totals
+                .entry(row_key[..prefix_len].to_vec())
+                .or_default() += 1;
+        }
         *self.column_totals.entry(column_key).or_default() += 1;
         self.row_members.entry(row_key).or_default().push(row_index);
         self.all_members.push(row_index);
@@ -610,8 +665,24 @@ impl PivotAccumulator {
             self.column_keys.insert(vec!["Count".to_owned()]);
         }
 
-        let row_keys = self.row_keys.into_iter().collect::<Vec<_>>();
-        let column_keys = self.column_keys.into_iter().collect::<Vec<_>>();
+        let mut row_keys = self.row_keys.into_iter().collect::<Vec<_>>();
+        row_keys.sort_by(|left, right| {
+            compare_pivot_row_order(
+                left,
+                right,
+                &self.row_prefix_totals,
+                &self.row_totals,
+            )
+        });
+        let mut column_keys = self.column_keys.into_iter().collect::<Vec<_>>();
+        column_keys.sort_by(|left, right| {
+            self.column_totals
+                .get(right)
+                .copied()
+                .unwrap_or_default()
+                .cmp(&self.column_totals.get(left).copied().unwrap_or_default())
+                .then_with(|| left.cmp(right))
+        });
         let mut response_headers = pivot_headers(headers, row_columns, column_columns, &column_keys);
         let numeric_start = if row_columns.is_empty() { 1 } else { row_columns.len() };
         let mut numeric_columns = (numeric_start..response_headers.len()).collect::<Vec<_>>();
@@ -727,6 +798,40 @@ fn pivot_key(row: &[String], columns: &[usize], fallback: &str) -> Vec<String> {
                 .unwrap_or_else(|| "(blank)".to_owned())
         })
         .collect()
+}
+
+fn compare_pivot_row_order(
+    left: &[String],
+    right: &[String],
+    prefix_totals: &BTreeMap<Vec<String>, usize>,
+    row_totals: &BTreeMap<Vec<String>, usize>,
+) -> std::cmp::Ordering {
+    let common_len = left.len().min(right.len());
+    for index in 0..common_len {
+        let left_prefix = &left[..=index];
+        let right_prefix = &right[..=index];
+        if left_prefix == right_prefix {
+            continue;
+        }
+        let left_total = prefix_totals
+            .get(left_prefix)
+            .copied()
+            .unwrap_or_default();
+        let right_total = prefix_totals
+            .get(right_prefix)
+            .copied()
+            .unwrap_or_default();
+        return right_total
+            .cmp(&left_total)
+            .then_with(|| left_prefix.cmp(right_prefix));
+    }
+
+    row_totals
+        .get(right)
+        .copied()
+        .unwrap_or_default()
+        .cmp(&row_totals.get(left).copied().unwrap_or_default())
+        .then_with(|| left.cmp(right))
 }
 
 fn display_row_key(

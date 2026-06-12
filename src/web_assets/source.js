@@ -1,5 +1,6 @@
 import { importSource, loadWorksheet } from "./api.js";
 import { renderMapping } from "./mapping.js";
+import { loadSavedSession } from "./results.js";
 import { state } from "./state.js";
 import { renderTable, setStatus, showStep, statsHtml } from "./ui.js";
 
@@ -15,6 +16,21 @@ export function bindSourceEvents() {
       setStatus(error.message, true);
     }
   });
+
+  document.getElementById("sessionInput").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setStatus(`Loading session ${file.name}...`);
+    try {
+      const payload = JSON.parse(await file.text());
+      await loadSavedSession(payload);
+      setStatus(`Loaded session ${file.name}.`);
+    } catch (error) {
+      setStatus(error.message, true);
+    } finally {
+      event.target.value = "";
+    }
+  });
 }
 
 export function acceptSource(source) {
@@ -26,6 +42,7 @@ export function acceptSource(source) {
   document.querySelector('[data-step="mapping"]').disabled = false;
   document.querySelector('[data-step="analysis"]').disabled = false;
   document.querySelector('[data-step="results"]').disabled = true;
+  document.querySelector('[data-step="pivot"]').disabled = true;
   document.getElementById("sourceStatus").textContent = `${source.rowCount} rows, ${source.headers.length} columns`;
   setStatus(`Loaded ${source.rowCount} rows from ${source.fileName}.`);
   renderSource();

@@ -436,12 +436,41 @@ body.is-resizing .resize-splitter::before {
 }
 
 .cluster-item.theme {
+  flex: 1;
+  min-width: 0;
   padding-left: 24px;
   color: var(--muted);
 }
 
 .cluster-item.active {
   background: var(--active);
+}
+
+.cluster-item.reviewed {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.review-toggle {
+  width: 82px;
+  min-width: 82px;
+  min-height: 34px;
+  padding: 4px 6px;
+  border-width: 0 0 1px 1px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tree-row .review-toggle {
+  border-bottom: 0;
+}
+
+.review-toggle.reviewed {
+  background: var(--active);
+  color: var(--accent-dark);
+  font-weight: 700;
 }
 
 .results-table {

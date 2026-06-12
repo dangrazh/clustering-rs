@@ -10,6 +10,8 @@ export const state = {
   analysis: null,
   selection: null,
   expandedClusters: new Set(),
+  reviewedClusters: new Set(),
+  reviewedThemes: new Set(),
   detailPage: 1,
   detailPageSize: 50,
   resultsTreeWidth: null,

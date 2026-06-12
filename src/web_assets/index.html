@@ -25,10 +25,16 @@
       <section id="source" class="screen active">
         <div class="section-head">
           <h2>Source file</h2>
-          <label class="button primary">
-            Open CSV/XLSX
-            <input id="fileInput" type="file" accept=".csv,.xlsx,.xlsm,.xls" />
-          </label>
+          <div class="toolbar">
+            <label class="button">
+              Load Session
+              <input id="sessionInput" type="file" accept=".json" />
+            </label>
+            <label class="button primary">
+              Open CSV/XLSX
+              <input id="fileInput" type="file" accept=".csv,.xlsx,.xlsm,.xls" />
+            </label>
+          </div>
         </div>
         <div id="worksheetBar" class="toolbar hidden"></div>
         <div id="sourceStats" class="stats"></div>
@@ -75,6 +81,11 @@
           <h2>Results</h2>
           <div class="toolbar">
             <button id="downloadSession">Save Session</button>
+            <button id="downloadReviewState">Save Review State</button>
+            <label class="button">
+              Load Review State
+              <input id="reviewStateInput" type="file" accept=".json" />
+            </label>
             <button id="exportExcel" class="primary">Export Excel</button>
           </div>
         </div>
