@@ -4,6 +4,7 @@ export function bindNavigation() {
   document.querySelectorAll(".steps button").forEach((button) => {
     button.addEventListener("click", () => showStep(button.dataset.step));
   });
+  document.getElementById("statusOverlayClose")?.addEventListener("click", hideOverlay);
 }
 
 export function showStep(step) {
@@ -19,6 +20,28 @@ export function setStatus(message, isError = false) {
   const status = document.getElementById("statusLine");
   status.textContent = message;
   status.style.color = isError ? "var(--danger)" : "var(--muted)";
+}
+
+export function showBusy(title, message) {
+  showOverlay(title, message, false);
+}
+
+export function showError(title, message) {
+  showOverlay(title, message, true);
+}
+
+export function hideOverlay() {
+  document.getElementById("statusOverlay")?.classList.add("hidden");
+}
+
+function showOverlay(title, message, isError) {
+  const overlay = document.getElementById("statusOverlay");
+  if (!overlay) return;
+  overlay.classList.toggle("error", isError);
+  document.getElementById("statusOverlayTitle").textContent = title;
+  document.getElementById("statusOverlayMessage").textContent = message;
+  document.getElementById("statusOverlayClose").classList.toggle("hidden", !isError);
+  overlay.classList.remove("hidden");
 }
 
 export function statsHtml(items) {

@@ -2,7 +2,7 @@ import { importSource, loadWorksheet } from "./api.js";
 import { renderMapping } from "./mapping.js";
 import { loadSavedSession } from "./results.js";
 import { state } from "./state.js";
-import { renderTable, setStatus, showStep, statsHtml } from "./ui.js";
+import { hideOverlay, renderTable, setStatus, showBusy, showError, showStep, statsHtml } from "./ui.js";
 
 export function bindSourceEvents() {
   const fileInput = document.getElementById("fileInput");
@@ -17,11 +17,14 @@ export function bindSourceEvents() {
     const file = event.target.files[0];
     if (!file) return;
     setStatus(`Uploading ${file.name}...`);
+    showBusy("Uploading source file", `Loading ${file.name}. Large CSV or Excel files can take a while.`);
     try {
       acceptSource(await importSource(file));
       showStep("mapping");
+      hideOverlay();
     } catch (error) {
       setStatus(error.message, true);
+      showError("Source upload failed", error.message);
     } finally {
       event.target.value = "";
     }
@@ -41,12 +44,15 @@ export function bindSourceEvents() {
     }
     sessionInput.dataset.loading = "true";
     setStatus(`Loading session ${file.name}...`);
+    showBusy("Loading session", `Reading ${file.name}. Large saved sessions can take a while.`);
     try {
       const payload = JSON.parse(await readTextFile(file));
       await loadSavedSession(payload);
       setStatus(`Loaded session ${file.name}.`);
+      hideOverlay();
     } catch (error) {
       setStatus(error.message, true);
+      showError("Session load failed", error.message);
     } finally {
       event.target.value = "";
       delete sessionInput.dataset.loading;
@@ -96,10 +102,13 @@ function renderSource() {
 
 async function selectWorksheet(sheet) {
   setStatus(`Loading worksheet ${sheet}...`);
+  showBusy("Loading worksheet", `Loading worksheet ${sheet}.`);
   try {
     acceptSource(await loadWorksheet(state.source.sourceId, sheet));
+    hideOverlay();
   } catch (error) {
     setStatus(error.message, true);
+    showError("Worksheet load failed", error.message);
   }
 }
 

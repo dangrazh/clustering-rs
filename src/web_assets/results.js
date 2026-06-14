@@ -1,12 +1,20 @@
 import { exportExcel, fetchPivot, fetchResult, restoreSession } from "./api.js";
 import { state } from "./state.js";
-import { downloadJson, setStatus, showStep, statsHtml } from "./ui.js";
+import { downloadJson, hideOverlay, setStatus, showBusy, showError, showStep, statsHtml } from "./ui.js";
 import { clusterId, clusterKey, escapeHtml, sameSelection } from "./utils.js";
 
 export function bindResultsEvents() {
   document.getElementById("downloadSession").addEventListener("click", () => {
     if (!state.analysis) return;
-    downloadJson("incident_analysis_session.json", { version: 2, run: state.analysis, reviewState: reviewStatePayload() });
+    showBusy("Saving session", "Preparing the session JSON file. Large sessions can take a while.");
+    try {
+      downloadJson("incident_analysis_session.json", { version: 2, run: state.analysis, reviewState: reviewStatePayload() });
+      setStatus("Session download prepared.");
+      setTimeout(hideOverlay, 600);
+    } catch (error) {
+      setStatus(error.message, true);
+      showError("Session save failed", error.message);
+    }
   });
 
   document.getElementById("downloadReviewState").addEventListener("click", () => {
@@ -30,7 +38,10 @@ export function bindResultsEvents() {
   });
 
   document.getElementById("exportExcel").addEventListener("click", () => {
-    if (state.jobId) exportExcel(state.jobId);
+    if (!state.jobId) return;
+    showBusy("Exporting Excel", "Preparing the Excel export. Large result sets can take a while.");
+    exportExcel(state.jobId);
+    setTimeout(hideOverlay, 3000);
   });
 
   document.getElementById("clearDrilldown").addEventListener("click", () => {

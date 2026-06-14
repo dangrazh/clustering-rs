@@ -872,6 +872,48 @@ footer {
   font-size: 13px;
 }
 
+.status-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(20, 22, 24, 0.45);
+}
+
+.status-overlay.hidden {
+  display: none;
+}
+
+.status-overlay-panel {
+  width: min(520px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.3);
+  padding: 18px;
+}
+
+.status-overlay-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.status-overlay-message {
+  margin-top: 8px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.status-overlay.error .status-overlay-title {
+  color: var(--danger);
+}
+
+#statusOverlayClose {
+  margin-top: 14px;
+}
+
 @media (max-width: 760px) {
   .topbar,
   .section-head {

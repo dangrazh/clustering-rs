@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { downloadJson, setStatus, showStep } from "./ui.js";
+import { downloadJson, setStatus, showError, showStep } from "./ui.js";
 import { escapeHtml } from "./utils.js";
 
 const roles = [
@@ -16,10 +16,17 @@ export function bindMappingEvents() {
   document.getElementById("mappingInput").addEventListener("change", async (event) => {
     const file = event.target.files[0];
     if (!file) return;
-    const json = JSON.parse(await file.text());
-    state.mapping = json.mapping || json;
-    renderMapping();
-    setStatus(`Loaded mapping ${file.name}.`);
+    try {
+      const json = JSON.parse(await file.text());
+      state.mapping = json.mapping || json;
+      renderMapping();
+      setStatus(`Loaded mapping ${file.name}.`);
+    } catch (error) {
+      setStatus(error.message, true);
+      showError("Mapping load failed", error.message);
+    } finally {
+      event.target.value = "";
+    }
   });
 
   document.getElementById("downloadMapping").addEventListener("click", () => {
@@ -29,6 +36,7 @@ export function bindMappingEvents() {
   document.getElementById("confirmMapping").addEventListener("click", () => {
     if (state.mapping?.incident_number == null || state.mapping?.short_description == null) {
       setStatus("Map both required fields before continuing.", true);
+      showError("Mapping incomplete", "Map both required fields before continuing.");
       return;
     }
     setStatus("Field mapping confirmed.");

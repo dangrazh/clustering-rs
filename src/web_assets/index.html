@@ -154,6 +154,13 @@
     </main>
 
     <footer id="statusLine">Select a CSV or Excel incident export.</footer>
+    <div id="statusOverlay" class="status-overlay hidden" role="alert" aria-live="assertive">
+      <div class="status-overlay-panel">
+        <div id="statusOverlayTitle" class="status-overlay-title">Working</div>
+        <div id="statusOverlayMessage" class="status-overlay-message">Please wait.</div>
+        <button id="statusOverlayClose" class="hidden" type="button">Close</button>
+      </div>
+    </div>
     <script type="module" src="/app.js"></script>
   </body>
 </html>
