@@ -1,5 +1,6 @@
 // pub mod app;
 pub mod clustering;
+pub mod config;
 pub mod io;
 pub mod labels;
 pub mod model;

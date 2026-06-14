@@ -68,6 +68,12 @@
           <label>Cluster threshold <input id="similarityThreshold" type="number" min="1" max="100" step="1" /></label>
           <label>Theme threshold <input id="subgroupThreshold" type="number" min="1" max="100" step="1" /></label>
         </div>
+        <h3>Label term priority</h3>
+        <div class="term-policy">
+          <label>Boosted terms <textarea id="boostedTerms" rows="3" placeholder="password&#10;vpn"></textarea></label>
+          <label>Suppressed terms <textarea id="suppressedTerms" rows="3" placeholder="issue&#10;error"></textarea></label>
+          <label>Excluded terms <textarea id="excludedTerms" rows="3" placeholder="user&#10;ticket"></textarea></label>
+        </div>
         <div class="progress-panel">
           <div class="progress-track"><div id="progressBar" class="progress-bar">0%</div></div>
           <div id="progressMessage" class="muted">Waiting to start.</div>

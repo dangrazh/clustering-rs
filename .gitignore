@@ -5,10 +5,12 @@
 .localappdata/
 .verify/
 target/
+target-codex-tests/
 NuGet.Config
 *.txt
 Tests/
 *.md
+*.example.json
 src/IncidentClusteringAnalyzer/obj/
 src/IncidentClusteringAnalyzer/bin/
 src/IncidentClusteringAnalyzer.Core/obj/

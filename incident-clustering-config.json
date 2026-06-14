@@ -1,0 +1,14 @@
+{
+  "label_terms": {
+      "boosted": [
+      "payment failure",
+      "fails",
+      "loads",
+      "load"
+    ],
+    "suppressed": [
+    ],
+    "excluded": [
+    ]
+  }
+}

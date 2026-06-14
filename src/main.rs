@@ -1,4 +1,5 @@
 use anyhow::Result;
+use incident_clustering_analyzer::config::AppConfig;
 use incident_clustering_analyzer::web;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -11,7 +12,8 @@ async fn main() -> Result<()> {
     let address = std::env::var("CLUSTERING_WEB_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
         .parse()?;
-    web::serve(address).await
+    let config = AppConfig::load_from_env()?;
+    web::serve(address, config).await
 }
 
 fn init_logging() {

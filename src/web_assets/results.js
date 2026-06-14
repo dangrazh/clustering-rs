@@ -90,9 +90,11 @@ export async function loadSavedSession(payload) {
 }
 
 function initializeResult(run, jobId, reviewState = null) {
+  normalizeRunSettings(run);
   state.analysis = run;
   state.source = null;
   state.mapping = run.mapping || null;
+  state.settings = run.settings || state.settings;
   state.jobId = jobId;
   state.selection = { type: "all" };
   state.expandedClusters = new Set();
@@ -116,6 +118,14 @@ function initializeResult(run, jobId, reviewState = null) {
   document.querySelector('[data-step="analysis"]').disabled = true;
   document.querySelector('[data-step="results"]').disabled = false;
   document.querySelector('[data-step="pivot"]').disabled = false;
+}
+
+function normalizeRunSettings(run) {
+  run.settings ||= {};
+  run.settings.label_terms ||= { boosted: [], suppressed: [], excluded: [] };
+  run.settings.label_terms.boosted ||= [];
+  run.settings.label_terms.suppressed ||= [];
+  run.settings.label_terms.excluded ||= [];
 }
 
 function renderResults() {

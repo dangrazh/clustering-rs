@@ -5,6 +5,11 @@ export const state = {
     minimum_cluster_size: 50,
     similarity_threshold_percent: 42,
     subgroup_similarity_threshold_percent: 58,
+    label_terms: {
+      boosted: [],
+      suppressed: [],
+      excluded: [],
+    },
   },
   jobId: null,
   analysis: null,

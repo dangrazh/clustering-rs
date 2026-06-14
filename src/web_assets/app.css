@@ -261,6 +261,32 @@ input[type="number"] {
   margin-bottom: 16px;
 }
 
+.term-policy {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.term-policy label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.term-policy textarea {
+  min-height: 84px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+
 .progress-panel {
   background: var(--panel);
   border: 1px solid var(--line);

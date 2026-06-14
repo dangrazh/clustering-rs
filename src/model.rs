@@ -126,6 +126,15 @@ pub struct RunSettings {
     pub minimum_cluster_size: usize,
     pub similarity_threshold_percent: u8,
     pub subgroup_similarity_threshold_percent: u8,
+    #[serde(default)]
+    pub label_terms: LabelTermPolicy,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LabelTermPolicy {
+    pub boosted: Vec<String>,
+    pub suppressed: Vec<String>,
+    pub excluded: Vec<String>,
 }
 
 impl Default for RunSettings {
@@ -134,6 +143,7 @@ impl Default for RunSettings {
             minimum_cluster_size: 50,
             similarity_threshold_percent: 42,
             subgroup_similarity_threshold_percent: 58,
+            label_terms: LabelTermPolicy::default(),
         }
     }
 }

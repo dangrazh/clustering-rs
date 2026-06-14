@@ -119,7 +119,7 @@ pub fn cluster_incidents(
         .map(|(index, mut rows)| {
             rows.sort_unstable();
             let id = ClusterId(index + 1);
-            let label = summarize_cluster(id, &rows, records);
+            let label = summarize_cluster(id, &rows, records, &settings.label_terms);
             let subgroups = build_subgroups(id, &rows, records, settings);
             if let Some(tracker) = &cluster_tracker {
                 tracker.advance(1);
@@ -369,7 +369,7 @@ fn build_subgroups(
     if rows.len() <= settings.minimum_cluster_size || rows.len() > MAX_SUBGROUP_RECLUSTER_SIZE {
         return vec![Subgroup {
             id: 1,
-            label: summarize_cluster(cluster_id, rows, records),
+            label: summarize_cluster(cluster_id, rows, records, &settings.label_terms),
             incident_row_indices: rows.to_vec(),
         }];
     }
@@ -403,7 +403,7 @@ fn build_subgroups(
             rows.sort_unstable();
             Subgroup {
                 id: index + 1,
-                label: summarize_cluster(cluster_id, &rows, records),
+                label: summarize_cluster(cluster_id, &rows, records, &settings.label_terms),
                 incident_row_indices: rows,
             }
         })

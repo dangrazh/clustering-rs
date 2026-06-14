@@ -1,5 +1,6 @@
+use crate::config::AppConfig;
 use crate::io::{export_analysis, import_source, import_xlsx_sheet, list_worksheets};
-use crate::model::{AnalysisRun, ColumnMapping, RunSettings, SourceTable};
+use crate::model::{AnalysisRun, ColumnMapping, LabelTermPolicy, RunSettings, SourceTable};
 use crate::progress::ProgressUpdate;
 use crate::schema::{suggest_mapping, validate_mapping};
 use crate::worker::run_analysis_with_progress;
@@ -49,6 +50,7 @@ struct AppState {
     next_id: AtomicU64,
     sources: Mutex<HashMap<String, StoredSource>>,
     jobs: Mutex<HashMap<String, Arc<Mutex<AnalysisJob>>>>,
+    config: AppConfig,
 }
 
 #[derive(Clone)]
@@ -171,9 +173,16 @@ struct ErrorResponse {
     error: String,
 }
 
-pub async fn serve(address: SocketAddr) -> Result<()> {
+pub async fn serve(address: SocketAddr, config: AppConfig) -> Result<()> {
     let listener = TcpListener::bind(address).await?;
-    let state = WebState::default();
+    let state = WebState {
+        inner: Arc::new(AppState {
+            next_id: AtomicU64::default(),
+            sources: Mutex::new(HashMap::new()),
+            jobs: Mutex::new(HashMap::new()),
+            config,
+        }),
+    };
     tracing::info!("web UI listening on http://{address}");
 
     loop {
@@ -356,7 +365,7 @@ async fn start_analysis_endpoint(
     state: WebState,
 ) -> Result<Response<BoxBody>> {
     let body = request.into_body().collect().await?.to_bytes();
-    let payload: StartAnalysisRequest = serde_json::from_slice(&body)?;
+    let mut payload: StartAnalysisRequest = serde_json::from_slice(&body)?;
     let source = {
         let sources = state.inner.sources.lock().expect("source state poisoned");
         sources
@@ -365,6 +374,8 @@ async fn start_analysis_endpoint(
             .context("source not found")?
     };
     validate_mapping(&payload.mapping, &source)?;
+    payload.settings.label_terms =
+        merge_label_term_policy(&state.inner.config.label_terms, &payload.settings.label_terms);
 
     let job_id = state.next_id("job");
     let (sender, _) = broadcast::channel(128);
@@ -400,6 +411,29 @@ async fn start_analysis_endpoint(
         StatusCode::ACCEPTED,
         &StartAnalysisResponse { job_id },
     )?)
+}
+
+fn merge_label_term_policy(system: &LabelTermPolicy, run: &LabelTermPolicy) -> LabelTermPolicy {
+    LabelTermPolicy {
+        boosted: merge_terms(&system.boosted, &run.boosted),
+        suppressed: merge_terms(&system.suppressed, &run.suppressed),
+        excluded: merge_terms(&system.excluded, &run.excluded),
+    }
+}
+
+fn merge_terms(left: &[String], right: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::<String>::new();
+    left.iter()
+        .chain(right)
+        .filter_map(|term| {
+            let term = term.trim();
+            if term.is_empty() || !seen.insert(term.to_owned()) {
+                None
+            } else {
+                Some(term.to_owned())
+            }
+        })
+        .collect()
 }
 
 async fn restore_session_endpoint(

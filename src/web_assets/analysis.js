@@ -16,16 +16,31 @@ export function bindAnalysisEvents() {
       state.settings[key] = Number(event.target.value);
     });
   });
+
+  [
+    ["boostedTerms", "boosted"],
+    ["suppressedTerms", "suppressed"],
+    ["excludedTerms", "excluded"],
+  ].forEach(([id, key]) => {
+    document.getElementById(id).addEventListener("input", (event) => {
+      state.settings.label_terms[key] = parseTermList(event.target.value);
+    });
+  });
 }
 
 export function syncSettings() {
+  state.settings.label_terms ||= { boosted: [], suppressed: [], excluded: [] };
   document.getElementById("minimumClusterSize").value = state.settings.minimum_cluster_size;
   document.getElementById("similarityThreshold").value = state.settings.similarity_threshold_percent;
   document.getElementById("subgroupThreshold").value = state.settings.subgroup_similarity_threshold_percent;
+  document.getElementById("boostedTerms").value = formatTermList(state.settings.label_terms.boosted);
+  document.getElementById("suppressedTerms").value = formatTermList(state.settings.label_terms.suppressed);
+  document.getElementById("excludedTerms").value = formatTermList(state.settings.label_terms.excluded);
 }
 
 async function startAnalysis() {
   if (!state.source || !state.mapping) return;
+  syncTermPolicyFromInputs();
   setStatus("Starting clustering analysis.");
   clearProgress();
   showStep("analysis");
@@ -36,6 +51,24 @@ async function startAnalysis() {
   } catch (error) {
     setStatus(error.message, true);
   }
+}
+
+function syncTermPolicyFromInputs() {
+  state.settings.label_terms ||= { boosted: [], suppressed: [], excluded: [] };
+  state.settings.label_terms.boosted = parseTermList(document.getElementById("boostedTerms").value);
+  state.settings.label_terms.suppressed = parseTermList(document.getElementById("suppressedTerms").value);
+  state.settings.label_terms.excluded = parseTermList(document.getElementById("excludedTerms").value);
+}
+
+function parseTermList(value) {
+  return [...new Set(String(value || "")
+    .split(/[\n,;]+/)
+    .map((term) => term.trim())
+    .filter(Boolean))];
+}
+
+function formatTermList(terms) {
+  return Array.isArray(terms) ? terms.join("\n") : "";
 }
 
 function listenForProgress(jobId) {
