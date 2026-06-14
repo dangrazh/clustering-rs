@@ -1,4 +1,4 @@
-import { exportExcel, fetchPivot, fetchResult, restoreSession } from "./api.js";
+import { exportClusterViewExcel, exportExcel, exportPivotExcel, fetchPivot, fetchResult, restoreSession } from "./api.js";
 import { state } from "./state.js";
 import { downloadJson, hideOverlay, setStatus, showBusy, showError, showStep, statsHtml } from "./ui.js";
 import { clusterId, clusterKey, escapeHtml, sameSelection } from "./utils.js";
@@ -42,6 +42,40 @@ export function bindResultsEvents() {
     showBusy("Exporting Excel", "Preparing the Excel export. Large result sets can take a while.");
     exportExcel(state.jobId);
     setTimeout(hideOverlay, 3000);
+  });
+
+  document.getElementById("exportClusterView").addEventListener("click", async () => {
+    if (!state.jobId || !state.analysis) return;
+    showBusy("Exporting cluster view", "Preparing the cluster tree Excel export.");
+    try {
+      await exportClusterViewExcel(state.jobId, {
+        drilldownRowIndices: state.detailDrilldownRowIndices,
+        reviewedClusters: [...state.reviewedClusters],
+        reviewedThemes: [...state.reviewedThemes],
+      });
+      setStatus("Cluster view export prepared.");
+      setTimeout(hideOverlay, 600);
+    } catch (error) {
+      setStatus(error.message, true);
+      showError("Cluster view export failed", error.message);
+    }
+  });
+
+  document.getElementById("exportPivotExcel").addEventListener("click", async () => {
+    if (!state.jobId || !state.analysis) return;
+    if (!state.pivotRows.length && !state.pivotColumns.length) {
+      showError("Pivot export failed", "Add at least one field to Rows or Columns before exporting.");
+      return;
+    }
+    showBusy("Exporting pivot", "Preparing the pivot Excel export.");
+    try {
+      await exportPivotExcel(state.jobId, visibleDetailRowIndices(), state.pivotRows, state.pivotColumns);
+      setStatus("Pivot export prepared.");
+      setTimeout(hideOverlay, 600);
+    } catch (error) {
+      setStatus(error.message, true);
+      showError("Pivot export failed", error.message);
+    }
   });
 
   document.getElementById("clearDrilldown").addEventListener("click", () => {

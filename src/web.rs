@@ -14,8 +14,10 @@ use hyper::header::{self, HeaderValue};
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
+use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -39,6 +41,8 @@ const SOURCE_JS: &str = include_str!("web_assets/source.js");
 const STATE_JS: &str = include_str!("web_assets/state.js");
 const UI_JS: &str = include_str!("web_assets/ui.js");
 const UTILS_JS: &str = include_str!("web_assets/utils.js");
+const EXCEL_CELL_CHAR_LIMIT: usize = 32_767;
+const EXCEL_TRUNCATION_SUFFIX: &str = "...";
 
 #[derive(Clone, Default)]
 struct WebState {
@@ -149,6 +153,14 @@ struct PivotRequest {
     row_indices: Vec<usize>,
     row_columns: Vec<usize>,
     column_columns: Vec<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClusterViewExportRequest {
+    drilldown_row_indices: Option<Vec<usize>>,
+    reviewed_clusters: Vec<String>,
+    reviewed_themes: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -284,6 +296,12 @@ async fn handle(request: Request<Incoming>, state: WebState) -> Result<Response<
         }
         (Method::GET, path) if path.starts_with("/api/jobs/") && path.ends_with("/result") => {
             result_endpoint(path, state)
+        }
+        (Method::POST, path) if path.starts_with("/api/jobs/") && path.ends_with("/cluster-view/export") => {
+            cluster_view_export_endpoint(path, request, state).await
+        }
+        (Method::POST, path) if path.starts_with("/api/jobs/") && path.ends_with("/pivot/export") => {
+            pivot_export_endpoint(path, request, state).await
         }
         (Method::POST, path) if path.starts_with("/api/jobs/") && path.ends_with("/pivot") => {
             pivot_endpoint(path, request, state).await
@@ -601,6 +619,196 @@ async fn export_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody
     let bytes = std::fs::read(&path)?;
     let _ = std::fs::remove_file(&path);
 
+    excel_response(bytes, "clustered_incidents.xlsx")
+}
+
+async fn cluster_view_export_endpoint(
+    path: &str,
+    request: Request<Incoming>,
+    state: WebState,
+) -> Result<Response<BoxBody>> {
+    let job_id = path
+        .trim_start_matches("/api/jobs/")
+        .trim_end_matches("/cluster-view/export")
+        .trim_end_matches('/');
+    let body = request.into_body().collect().await?.to_bytes();
+    let payload: ClusterViewExportRequest = serde_json::from_slice(&body)?;
+    let bytes = {
+        let jobs = state.inner.jobs.lock().expect("job state poisoned");
+        let job = jobs.get(job_id).context("job not found")?;
+        let job = job.lock().expect("job state poisoned");
+        let analysis = job
+            .result
+            .as_ref()
+            .context("analysis result is not ready for export")?;
+        build_cluster_view_workbook(analysis, payload)?
+    };
+    excel_response(bytes, "cluster_view.xlsx")
+}
+
+async fn pivot_export_endpoint(
+    path: &str,
+    request: Request<Incoming>,
+    state: WebState,
+) -> Result<Response<BoxBody>> {
+    let job_id = path
+        .trim_start_matches("/api/jobs/")
+        .trim_end_matches("/pivot/export")
+        .trim_end_matches('/');
+    let body = request.into_body().collect().await?.to_bytes();
+    let payload: PivotRequest = serde_json::from_slice(&body)?;
+    let bytes = {
+        let jobs = state.inner.jobs.lock().expect("job state poisoned");
+        let job = jobs.get(job_id).context("job not found")?;
+        let job = job.lock().expect("job state poisoned");
+        let analysis = job
+            .result
+            .as_ref()
+            .context("analysis result is not ready for pivot export")?;
+        let pivot = build_pivot_response(analysis, payload)?;
+        build_pivot_workbook(&pivot)?
+    };
+    excel_response(bytes, "pivot.xlsx")
+}
+
+fn build_cluster_view_workbook(
+    analysis: &AnalysisRun,
+    request: ClusterViewExportRequest,
+) -> Result<Vec<u8>> {
+    let drilldown_rows = request
+        .drilldown_row_indices
+        .map(|indices| indices.into_iter().collect::<HashSet<_>>());
+    let reviewed_clusters = request.reviewed_clusters.into_iter().collect::<HashSet<_>>();
+    let reviewed_themes = request.reviewed_themes.into_iter().collect::<HashSet<_>>();
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.set_name("Cluster View")?;
+
+    let headers = [
+        "Level",
+        "Cluster ID",
+        "Cluster Label",
+        "Theme ID",
+        "Theme Label",
+        "Count",
+        "Reviewed",
+    ];
+    for (column, header) in headers.iter().enumerate() {
+        worksheet.write_string(0, column as u16, truncate_for_excel(header))?;
+    }
+
+    let all_count = drilldown_rows
+        .as_ref()
+        .map(HashSet::len)
+        .unwrap_or(analysis.processed_incidents.len());
+    let mut row = 1_u32;
+    write_cluster_view_row(
+        worksheet,
+        row,
+        ["All", "", "All incidents", "", "", &all_count.to_string(), ""],
+    )?;
+    row += 1;
+
+    for cluster in &analysis.clusters {
+        let count = filtered_export_count(&cluster.incident_row_indices, drilldown_rows.as_ref());
+        if drilldown_rows.is_some() && count == 0 {
+            continue;
+        }
+        let cluster_review_key = cluster.id.0.to_string();
+        let reviewed = reviewed_clusters.contains(&cluster_review_key);
+        write_cluster_view_row(
+            worksheet,
+            row,
+            [
+                "Cluster",
+                &cluster.id.to_string(),
+                &cluster.label,
+                "",
+                "",
+                &count.to_string(),
+                if reviewed { "Yes" } else { "No" },
+            ],
+        )?;
+        row += 1;
+
+        for theme in &cluster.subgroups {
+            let count = filtered_export_count(&theme.incident_row_indices, drilldown_rows.as_ref());
+            if drilldown_rows.is_some() && count == 0 {
+                continue;
+            }
+            let theme_review_key = format!("{}:{}", cluster.id.0, theme.id);
+            let reviewed = reviewed_themes.contains(&theme_review_key);
+            write_cluster_view_row(
+                worksheet,
+                row,
+                [
+                    "Theme",
+                    &cluster.id.to_string(),
+                    &cluster.label,
+                    &theme.id.to_string(),
+                    &theme.label,
+                    &count.to_string(),
+                    if reviewed { "Yes" } else { "No" },
+                ],
+            )?;
+            row += 1;
+        }
+    }
+
+    Ok(workbook.save_to_buffer()?)
+}
+
+fn write_cluster_view_row(
+    worksheet: &mut rust_xlsxwriter::Worksheet,
+    row: u32,
+    cells: [&str; 7],
+) -> Result<()> {
+    for (column, cell) in cells.iter().enumerate() {
+        if column == 5 {
+            worksheet.write_number(row, column as u16, cell.parse::<f64>().unwrap_or_default())?;
+        } else {
+            worksheet.write_string(row, column as u16, truncate_for_excel(cell))?;
+        }
+    }
+    Ok(())
+}
+
+fn filtered_export_count(row_indices: &[usize], drilldown_rows: Option<&HashSet<usize>>) -> usize {
+    match drilldown_rows {
+        Some(rows) => row_indices.iter().filter(|row_index| rows.contains(row_index)).count(),
+        None => row_indices.len(),
+    }
+}
+
+fn build_pivot_workbook(pivot: &PivotResponse) -> Result<Vec<u8>> {
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.set_name("Pivot")?;
+    let numeric_columns = pivot.numeric_columns.iter().copied().collect::<HashSet<_>>();
+
+    for (column, header) in pivot.headers.iter().enumerate() {
+        worksheet.write_string(0, column as u16, truncate_for_excel(header))?;
+    }
+
+    for (row_index, row) in pivot.rows.iter().enumerate() {
+        let worksheet_row = (row_index + 1) as u32;
+        for (column, cell) in row.cells.iter().enumerate() {
+            if numeric_columns.contains(&column) {
+                worksheet.write_number(
+                    worksheet_row,
+                    column as u16,
+                    cell.parse::<f64>().unwrap_or_default(),
+                )?;
+            } else {
+                worksheet.write_string(worksheet_row, column as u16, truncate_for_excel(cell))?;
+            }
+        }
+    }
+
+    Ok(workbook.save_to_buffer()?)
+}
+
+fn excel_response(bytes: Vec<u8>, filename: &str) -> Result<Response<BoxBody>> {
     let mut response = Response::new(full_body(bytes));
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -610,7 +818,7 @@ async fn export_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody
     );
     response.headers_mut().insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_static("attachment; filename=\"clustered_incidents.xlsx\""),
+        HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))?,
     );
     Ok(response)
 }
@@ -1075,6 +1283,19 @@ fn text_response(
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     response
+}
+
+fn truncate_for_excel(value: &str) -> Cow<'_, str> {
+    if value.chars().count() <= EXCEL_CELL_CHAR_LIMIT {
+        return Cow::Borrowed(value);
+    }
+
+    let truncated = value
+        .chars()
+        .take(EXCEL_CELL_CHAR_LIMIT - EXCEL_TRUNCATION_SUFFIX.chars().count())
+        .collect::<String>();
+
+    Cow::Owned(format!("{truncated}{EXCEL_TRUNCATION_SUFFIX}"))
 }
 
 fn full_body(body: impl Into<Bytes>) -> BoxBody {

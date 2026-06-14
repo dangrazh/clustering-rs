@@ -92,6 +92,7 @@
               Load Review State
               <input id="reviewStateInput" type="file" accept=".json" />
             </label>
+            <button id="exportClusterView">Export Cluster View</button>
             <button id="exportExcel" class="primary">Export Excel</button>
           </div>
         </div>
@@ -126,7 +127,10 @@
       <section id="pivot" class="screen">
         <div class="section-head">
           <h2>Pivot</h2>
-          <div id="pivotStatus" class="muted">No result loaded.</div>
+          <div class="toolbar">
+            <div id="pivotStatus" class="muted">No result loaded.</div>
+            <button id="exportPivotExcel" class="primary">Export Pivot Excel</button>
+          </div>
         </div>
         <div class="pivot-layout">
           <aside class="pivot-fields-panel">
