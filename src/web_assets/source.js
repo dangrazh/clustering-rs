@@ -5,7 +5,15 @@ import { state } from "./state.js";
 import { renderTable, setStatus, showStep, statsHtml } from "./ui.js";
 
 export function bindSourceEvents() {
-  document.getElementById("fileInput").addEventListener("change", async (event) => {
+  const fileInput = document.getElementById("fileInput");
+  const sessionInput = document.getElementById("sessionInput");
+  if (!fileInput || !sessionInput) {
+    setStatus("Source controls did not initialize. Refresh the page to reload the latest UI.", true);
+    return;
+  }
+  console.info("Source file controls initialized.");
+
+  fileInput.addEventListener("change", async (event) => {
     const file = event.target.files[0];
     if (!file) return;
     setStatus(`Uploading ${file.name}...`);
@@ -14,23 +22,38 @@ export function bindSourceEvents() {
       showStep("mapping");
     } catch (error) {
       setStatus(error.message, true);
+    } finally {
+      event.target.value = "";
     }
   });
 
-  document.getElementById("sessionInput").addEventListener("change", async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const loadSession = async (event) => {
+    if (sessionInput.dataset.loading === "true") return;
+    console.info("Session file selection event received.", {
+      type: event.type,
+      value: event.target.value,
+      files: event.target.files ? Array.from(event.target.files).map((file) => `${file.name}|${file.size}`) : [],
+    });
+    const file = event.target.files && event.target.files[0];
+    if (!file) {
+      setStatus("Session file was selected, but the browser did not expose it to the app. Try selecting the file again or use a standard file picker.", true);
+      return;
+    }
+    sessionInput.dataset.loading = "true";
     setStatus(`Loading session ${file.name}...`);
     try {
-      const payload = JSON.parse(await file.text());
+      const payload = JSON.parse(await readTextFile(file));
       await loadSavedSession(payload);
       setStatus(`Loaded session ${file.name}.`);
     } catch (error) {
       setStatus(error.message, true);
     } finally {
       event.target.value = "";
+      delete sessionInput.dataset.loading;
     }
-  });
+  };
+  sessionInput.addEventListener("change", loadSession);
+  sessionInput.addEventListener("input", loadSession);
 }
 
 export function acceptSource(source) {
@@ -78,4 +101,14 @@ async function selectWorksheet(sheet) {
   } catch (error) {
     setStatus(error.message, true);
   }
+}
+
+function readTextFile(file) {
+  if (typeof file.text === "function") return file.text();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Failed to read file."));
+    reader.readAsText(file);
+  });
 }

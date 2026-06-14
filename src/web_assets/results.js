@@ -121,11 +121,11 @@ function initializeResult(run, jobId, reviewState = null) {
 }
 
 function normalizeRunSettings(run) {
-  run.settings ||= {};
-  run.settings.label_terms ||= { boosted: [], suppressed: [], excluded: [] };
-  run.settings.label_terms.boosted ||= [];
-  run.settings.label_terms.suppressed ||= [];
-  run.settings.label_terms.excluded ||= [];
+  if (!run.settings) run.settings = {};
+  if (!run.settings.label_terms) run.settings.label_terms = { boosted: [], suppressed: [], excluded: [] };
+  if (!run.settings.label_terms.boosted) run.settings.label_terms.boosted = [];
+  if (!run.settings.label_terms.suppressed) run.settings.label_terms.suppressed = [];
+  if (!run.settings.label_terms.excluded) run.settings.label_terms.excluded = [];
 }
 
 function renderResults() {

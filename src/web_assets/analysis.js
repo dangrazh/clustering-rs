@@ -29,7 +29,7 @@ export function bindAnalysisEvents() {
 }
 
 export function syncSettings() {
-  state.settings.label_terms ||= { boosted: [], suppressed: [], excluded: [] };
+  if (!state.settings.label_terms) state.settings.label_terms = { boosted: [], suppressed: [], excluded: [] };
   document.getElementById("minimumClusterSize").value = state.settings.minimum_cluster_size;
   document.getElementById("similarityThreshold").value = state.settings.similarity_threshold_percent;
   document.getElementById("subgroupThreshold").value = state.settings.subgroup_similarity_threshold_percent;
@@ -54,7 +54,7 @@ async function startAnalysis() {
 }
 
 function syncTermPolicyFromInputs() {
-  state.settings.label_terms ||= { boosted: [], suppressed: [], excluded: [] };
+  if (!state.settings.label_terms) state.settings.label_terms = { boosted: [], suppressed: [], excluded: [] };
   state.settings.label_terms.boosted = parseTermList(document.getElementById("boostedTerms").value);
   state.settings.label_terms.suppressed = parseTermList(document.getElementById("suppressedTerms").value);
   state.settings.label_terms.excluded = parseTermList(document.getElementById("excludedTerms").value);
