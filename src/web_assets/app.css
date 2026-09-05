@@ -824,6 +824,10 @@ body.is-resizing .column-resizer::after {
   text-align: right;
 }
 
+.pivot-table .pivot-value {
+  cursor: pointer;
+}
+
 .pivot-data-row {
   cursor: context-menu;
 }

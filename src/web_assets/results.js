@@ -189,12 +189,12 @@ function renderResults() {
 
 function renderClusterList() {
   const list = document.getElementById("clusterList");
-  const drilldownRows = activeDrilldownRows();
+  const visibleRows = treeVisibleRows();
   list.innerHTML = "";
-  addClusterButton(list, drilldownRows ? `All incidents (${drilldownRows.size})` : "All incidents", { type: "all" });
+  addClusterButton(list, visibleRows ? `All incidents (${visibleRows.size})` : "All incidents", { type: "all" });
   state.analysis.clusters.forEach((cluster) => {
-    const clusterCount = filteredIncidentCount(cluster.incident_row_indices, drilldownRows);
-    if (drilldownRows && clusterCount === 0) return;
+    const clusterCount = filteredIncidentCount(cluster.incident_row_indices, visibleRows);
+    if (visibleRows && clusterCount === 0) return;
     const key = clusterKey(cluster.id);
     const expanded = state.expandedClusters.has(key);
     const row = document.createElement("div");
@@ -229,8 +229,8 @@ function renderClusterList() {
 
     if (expanded) {
       cluster.subgroups.forEach((theme) => {
-        const themeCount = filteredIncidentCount(theme.incident_row_indices, drilldownRows);
-        if (drilldownRows && themeCount === 0) return;
+        const themeCount = filteredIncidentCount(theme.incident_row_indices, visibleRows);
+        if (visibleRows && themeCount === 0) return;
         const themeSelection = { type: "theme", cluster: cluster.id, theme: theme.id };
         const themeRow = document.createElement("div");
         themeRow.className = "tree-row theme-row";
@@ -247,13 +247,21 @@ function renderClusterList() {
   });
 }
 
-function activeDrilldownRows() {
-  return Array.isArray(state.detailDrilldownRowIndices) ? new Set(state.detailDrilldownRowIndices) : null;
+export function treeVisibleRows() {
+  const run = state.analysis;
+  const hasColumnFilters = state.detailColumnFilters.some(isDetailFilterActive);
+  const hasDrilldown = Array.isArray(state.detailDrilldownRowIndices);
+  if (!run || (!hasColumnFilters && !hasDrilldown)) return null;
+
+  let rowIndices = run.processed_incidents.map((record) => record.source_row_index);
+  rowIndices = applyDetailFilters(rowIndices, run.source.rows);
+  rowIndices = applyDetailDrilldown(rowIndices);
+  return new Set(rowIndices);
 }
 
-function filteredIncidentCount(rowIndices, drilldownRows) {
-  if (!drilldownRows) return rowIndices.length;
-  return rowIndices.reduce((count, rowIndex) => count + Number(drilldownRows.has(rowIndex)), 0);
+export function filteredIncidentCount(rowIndices, visibleRows) {
+  if (!visibleRows) return rowIndices.length;
+  return rowIndices.reduce((count, rowIndex) => count + Number(visibleRows.has(rowIndex)), 0);
 }
 
 function addClusterButton(list, text, selection, extraClass = "") {
@@ -572,15 +580,17 @@ function renderPivotResponse(target, pivot) {
         `<tr class="pivot-data-row${row.total ? " pivot-total-row" : ""}" data-pivot-row="${rowIndex}" tabindex="0">${row.cells
           .map(
             (cell, column) =>
-              `<td class="${numericColumns.has(column) ? "numeric" : ""}" title="${escapeHtml(cell)}">${escapeHtml(cell)}</td>`
+              `<td class="${numericColumns.has(column) ? "numeric pivot-value" : ""}" data-pivot-column="${column}" title="${
+                numericColumns.has(column) ? "Double-click to filter records" : escapeHtml(cell)
+              }">${escapeHtml(cell)}</td>`
           )
           .join("")}</tr>`
     )
     .join("")}</tbody></table>`;
-  bindPivotRowSelection(target);
+  bindPivotRowSelection(target, pivot);
 }
 
-function bindPivotRowSelection(target) {
+function bindPivotRowSelection(target, pivot) {
   target.querySelectorAll(".pivot-data-row").forEach((row) => {
     row.addEventListener("click", () => selectPivotRow(row));
     row.addEventListener("contextmenu", (event) => {
@@ -595,6 +605,62 @@ function bindPivotRowSelection(target) {
       }
     });
   });
+  target.querySelectorAll(".pivot-value").forEach((cell) => {
+    cell.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      const rowIndex = Number(cell.closest(".pivot-data-row")?.dataset.pivotRow);
+      const tableColumn = Number(cell.dataset.pivotColumn);
+      applyPivotCellFilters(pivot, rowIndex, tableColumn);
+    });
+  });
+}
+
+export function pivotCellFilters(
+  pivot,
+  rowIndex,
+  tableColumn,
+  rowColumns = state.pivotRows,
+  columnColumns = state.pivotColumns
+) {
+  const row = pivot.rows?.[rowIndex];
+  if (!row || !(pivot.numericColumns || []).includes(tableColumn)) return [];
+
+  const filters = [];
+  if (!row.total) {
+    rowColumns.forEach((column, index) => {
+      const selected = row.rowFilterValues?.[index];
+      if (selected) filters.push({ column, selected });
+    });
+  }
+
+  const numericStart = rowColumns.length || 1;
+  const columnBucket = tableColumn - numericStart;
+  const columnFilterValues = pivot.columnFilterValues?.[columnBucket];
+  if (columnFilterValues) {
+    columnColumns.forEach((column, index) => {
+      const selected = columnFilterValues[index];
+      if (selected) filters.push({ column, selected });
+    });
+  }
+  return filters;
+}
+
+function applyPivotCellFilters(pivot, rowIndex, tableColumn) {
+  const filters = pivotCellFilters(pivot, rowIndex, tableColumn);
+  syncDetailColumnState(state.analysis.source.headers.length);
+  filters.forEach(({ column, selected }) => {
+    state.detailColumnFilters[column] = {
+      selected: selected.map(detailCellValue).sort(compareDetailValues),
+      query: "",
+      searchDeselected: false,
+    };
+  });
+  state.detailOpenFilterColumn = null;
+  state.detailPage = 1;
+  hidePivotContextMenu();
+  renderClusterList();
+  renderDetailRows();
+  showStep("results");
 }
 
 function selectPivotRow(row) {
@@ -923,6 +989,7 @@ function bindColumnControls(target) {
       const column = Number(input.dataset.column);
       updateDetailFilterQuery(column, input.value);
       state.detailOpenFilterColumn = column;
+      renderClusterList();
       renderDetailRows(column, "search");
     });
   });
@@ -931,6 +998,7 @@ function bindColumnControls(target) {
     checkbox.addEventListener("change", () => {
       const column = Number(checkbox.dataset.column);
       setDetailFilterValue(column, checkbox.value, checkbox.checked);
+      renderClusterList();
       renderDetailRows(column);
     });
   });
@@ -939,6 +1007,7 @@ function bindColumnControls(target) {
     checkbox.addEventListener("change", () => {
       const column = Number(checkbox.dataset.column);
       toggleVisibleFilterValues(column);
+      renderClusterList();
       renderDetailRows(column);
     });
   });
@@ -949,6 +1018,7 @@ function bindColumnControls(target) {
       state.detailColumnFilters[column] = { selected: null, query: "", searchDeselected: false };
       state.detailPage = 1;
       state.detailOpenFilterColumn = column;
+      renderClusterList();
       renderDetailRows(column);
     });
   });

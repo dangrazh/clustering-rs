@@ -170,6 +170,7 @@ struct PivotResponse {
     headers: Vec<String>,
     rows: Vec<PivotResponseRow>,
     numeric_columns: Vec<usize>,
+    column_filter_values: Vec<Vec<Vec<String>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -178,6 +179,7 @@ struct PivotResponseRow {
     cells: Vec<String>,
     total: bool,
     row_indices: Vec<usize>,
+    row_filter_values: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -841,7 +843,15 @@ fn build_pivot_response(analysis: &AnalysisRun, request: PivotRequest) -> Result
         };
         let row_key = pivot_key(row, &row_columns, "Count");
         let column_key = pivot_key(row, &column_columns, "Count");
-        pivot.add(row_index, row_key, column_key);
+        let row_filter_values = pivot_filter_values(row, &row_columns);
+        let column_filter_values = pivot_filter_values(row, &column_columns);
+        pivot.add(
+            row_index,
+            row_key,
+            column_key,
+            row_filter_values,
+            column_filter_values,
+        );
     }
 
     Ok(pivot.into_response(
@@ -871,12 +881,21 @@ struct PivotAccumulator {
     row_prefix_totals: BTreeMap<Vec<String>, usize>,
     column_totals: BTreeMap<Vec<String>, usize>,
     row_members: BTreeMap<Vec<String>, Vec<usize>>,
+    row_filter_values: BTreeMap<Vec<String>, Vec<BTreeSet<String>>>,
+    column_filter_values: BTreeMap<Vec<String>, Vec<BTreeSet<String>>>,
     all_members: Vec<usize>,
     grand_total: usize,
 }
 
 impl PivotAccumulator {
-    fn add(&mut self, row_index: usize, row_key: Vec<String>, column_key: Vec<String>) {
+    fn add(
+        &mut self,
+        row_index: usize,
+        row_key: Vec<String>,
+        column_key: Vec<String>,
+        row_filter_values: Vec<String>,
+        column_filter_values: Vec<String>,
+    ) {
         self.row_keys.insert(row_key.clone());
         self.column_keys.insert(column_key.clone());
         *self.counts.entry((row_key.clone(), column_key.clone())).or_default() += 1;
@@ -887,8 +906,17 @@ impl PivotAccumulator {
                 .entry(row_key[..prefix_len].to_vec())
                 .or_default() += 1;
         }
-        *self.column_totals.entry(column_key).or_default() += 1;
-        self.row_members.entry(row_key).or_default().push(row_index);
+        *self.column_totals.entry(column_key.clone()).or_default() += 1;
+        add_pivot_filter_values(&mut self.row_filter_values, &row_key, row_filter_values);
+        add_pivot_filter_values(
+            &mut self.column_filter_values,
+            &column_key,
+            column_filter_values,
+        );
+        self.row_members
+            .entry(row_key)
+            .or_default()
+            .push(row_index);
         self.all_members.push(row_index);
         self.grand_total += 1;
     }
@@ -925,6 +953,16 @@ impl PivotAccumulator {
                 .cmp(&self.column_totals.get(left).copied().unwrap_or_default())
                 .then_with(|| left.cmp(right))
         });
+        let column_filter_values = if column_columns.is_empty() {
+            Vec::new()
+        } else {
+            column_keys
+                .iter()
+                .map(|key| {
+                    pivot_filter_value_sets(self.column_filter_values.get(key).map(Vec::as_slice))
+                })
+                .collect()
+        };
         let mut response_headers = pivot_headers(headers, row_columns, column_columns, &column_keys);
         let numeric_start = if row_columns.is_empty() { 1 } else { row_columns.len() };
         let mut numeric_columns = (numeric_start..response_headers.len()).collect::<Vec<_>>();
@@ -956,6 +994,11 @@ impl PivotAccumulator {
                     .get(row_key)
                     .cloned()
                     .unwrap_or_default(),
+                row_filter_values: if row_columns.is_empty() {
+                    Vec::new()
+                } else {
+                    pivot_filter_value_sets(self.row_filter_values.get(row_key).map(Vec::as_slice))
+                },
             });
             previous_row_key = Some(row_key);
         }
@@ -981,6 +1024,7 @@ impl PivotAccumulator {
                 cells: total_cells,
                 total: true,
                 row_indices: self.all_members.clone(),
+                row_filter_values: Vec::new(),
             });
         }
 
@@ -994,8 +1038,36 @@ impl PivotAccumulator {
             headers: response_headers,
             rows,
             numeric_columns,
+            column_filter_values,
         }
     }
+}
+
+fn add_pivot_filter_values(
+    values_by_key: &mut BTreeMap<Vec<String>, Vec<BTreeSet<String>>>,
+    key: &[String],
+    values: Vec<String>,
+) {
+    let filter_values = values_by_key
+        .entry(key.to_vec())
+        .or_insert_with(|| vec![BTreeSet::new(); values.len()]);
+    filter_values
+        .iter_mut()
+        .zip(values)
+        .for_each(|(selected, value)| {
+            selected.insert(value);
+        });
+}
+
+fn pivot_filter_value_sets(values: Option<&[BTreeSet<String>]>) -> Vec<Vec<String>> {
+    values
+        .map(|values| {
+            values
+                .iter()
+                .map(|selected| selected.iter().cloned().collect())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn pivot_headers(
@@ -1039,6 +1111,13 @@ fn pivot_key(row: &[String], columns: &[usize], fallback: &str) -> Vec<String> {
                 })
                 .unwrap_or_else(|| "(blank)".to_owned())
         })
+        .collect()
+}
+
+fn pivot_filter_values(row: &[String], columns: &[usize]) -> Vec<String> {
+    columns
+        .iter()
+        .map(|column| row.get(*column).cloned().unwrap_or_default())
         .collect()
 }
 
@@ -1300,4 +1379,40 @@ fn truncate_for_excel(value: &str) -> Cow<'_, str> {
 
 fn full_body(body: impl Into<Bytes>) -> BoxBody {
     Full::new(body.into()).boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pivot_response_preserves_exact_values_for_detail_filters() {
+        let mut pivot = PivotAccumulator::default();
+        pivot.add(
+            0,
+            vec!["Open".to_owned()],
+            vec!["Zurich".to_owned()],
+            vec![" Open ".to_owned()],
+            vec!["Zurich".to_owned()],
+        );
+        pivot.add(
+            1,
+            vec!["Open".to_owned()],
+            vec!["Zurich".to_owned()],
+            vec!["Open".to_owned()],
+            vec!["Zurich".to_owned()],
+        );
+
+        let response =
+            pivot.into_response(2, &["Status".to_owned(), "City".to_owned()], &[0], &[1]);
+
+        assert_eq!(
+            response.rows[0].row_filter_values,
+            vec![vec![" Open ".to_owned(), "Open".to_owned()]]
+        );
+        assert_eq!(
+            response.column_filter_values,
+            vec![vec![vec!["Zurich".to_owned()]]]
+        );
+    }
 }
