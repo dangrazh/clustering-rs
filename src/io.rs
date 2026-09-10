@@ -92,7 +92,24 @@ pub fn import_xlsx_sheet(path: impl AsRef<Path>, sheet_name: &str) -> Result<Sou
 }
 
 pub fn export_analysis(run: &AnalysisRun, path: impl AsRef<Path>) -> Result<()> {
-    let path = path.as_ref();
+    std::fs::write(path, export_analysis_bytes(run, None)?)?;
+    Ok(())
+}
+
+pub fn export_analysis_bytes(run: &AnalysisRun, selected: Option<&[usize]>) -> Result<Vec<u8>> {
+    export_analysis_bytes_with_labels(run, selected, None)
+}
+
+pub fn export_analysis_bytes_with_labels(
+    run: &AnalysisRun,
+    selected: Option<&[usize]>,
+    annotations: Option<&crate::workflow::Annotations>,
+) -> Result<Vec<u8>> {
+    let selected = selected.map(|rows| {
+        rows.iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+    });
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
 
@@ -110,11 +127,12 @@ pub fn export_analysis(run: &AnalysisRun, path: impl AsRef<Path>) -> Result<()> 
         worksheet.write_string(0, column as u16, truncate_for_excel(header))?;
     }
 
-    let cluster_lookup = build_cluster_lookup(&run.clusters);
+    let cluster_lookup = build_cluster_lookup(&run.clusters, annotations);
     for (export_row_index, source_row_index) in run
         .processed_incidents
         .iter()
         .map(|record| record.source_row_index)
+        .filter(|row| selected.as_ref().is_none_or(|rows| rows.contains(row)))
         .enumerate()
     {
         let excel_row = (export_row_index + 1) as u32;
@@ -158,9 +176,7 @@ pub fn export_analysis(run: &AnalysisRun, path: impl AsRef<Path>) -> Result<()> 
         worksheet.write_number(excel_row, base_column + 5, metadata.theme_size as f64)?;
     }
 
-    workbook
-        .save(path)
-        .with_context(|| format!("failed to save export {}", path.display()))
+    Ok(workbook.save_to_buffer()?)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,17 +213,31 @@ impl ExportRowMetadata {
     }
 }
 
-fn build_cluster_lookup(clusters: &[Cluster]) -> HashMap<usize, ExportRowMetadata> {
+fn build_cluster_lookup(
+    clusters: &[Cluster],
+    annotations: Option<&crate::workflow::Annotations>,
+) -> HashMap<usize, ExportRowMetadata> {
     let mut lookup = HashMap::new();
 
     for cluster in clusters {
-        let cluster_metadata = ExportRowMetadata::for_cluster(cluster, None);
+        let mut cluster_metadata = ExportRowMetadata::for_cluster(cluster, None);
+        if let Some(a) = annotations {
+            cluster_metadata.cluster_label = a
+                .label(&cluster.id.0.to_string(), &cluster.label)
+                .to_owned();
+        }
         for row_index in &cluster.incident_row_indices {
             lookup.insert(*row_index, cluster_metadata.clone());
         }
 
         for theme in &cluster.subgroups {
-            let theme_metadata = ExportRowMetadata::for_cluster(cluster, Some(theme));
+            let mut theme_metadata = ExportRowMetadata::for_cluster(cluster, Some(theme));
+            theme_metadata.cluster_label = cluster_metadata.cluster_label.clone();
+            if let Some(a) = annotations {
+                theme_metadata.theme_label = a
+                    .label(&format!("{}:{}", cluster.id.0, theme.id), &theme.label)
+                    .to_owned();
+            }
             for row_index in &theme.incident_row_indices {
                 lookup.insert(*row_index, theme_metadata.clone());
             }
@@ -278,7 +308,7 @@ mod tests {
             }],
         }];
 
-        let lookup = build_cluster_lookup(&clusters);
+        let lookup = build_cluster_lookup(&clusters, None);
 
         assert_eq!(
             lookup.get(&2),

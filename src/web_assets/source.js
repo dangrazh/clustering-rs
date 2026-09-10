@@ -46,8 +46,7 @@ export function bindSourceEvents() {
     setStatus(`Loading session ${file.name}...`);
     showBusy("Loading session", `Reading ${file.name}. Large saved sessions can take a while.`);
     try {
-      const payload = JSON.parse(await readTextFile(file));
-      await loadSavedSession(payload);
+      await loadSavedSession(file);
       setStatus(`Loaded session ${file.name}.`);
       hideOverlay();
     } catch (error) {
@@ -110,14 +109,4 @@ async function selectWorksheet(sheet) {
     setStatus(error.message, true);
     showError("Worksheet load failed", error.message);
   }
-}
-
-function readTextFile(file) {
-  if (typeof file.text === "function") return file.text();
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error || new Error("Failed to read file."));
-    reader.readAsText(file);
-  });
 }

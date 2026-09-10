@@ -33,11 +33,11 @@ export async function fetchResult(jobId) {
   return jsonOrThrow(response);
 }
 
-export async function restoreSession(run) {
+export async function restoreSession(file) {
   const response = await fetch("/api/sessions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ run }),
+    headers: { "Content-Type": "application/octet-stream" },
+    body: file,
   });
   return jsonOrThrow(response);
 }
@@ -51,10 +51,21 @@ export async function fetchPivot(jobId, rowIndices, rowColumns, columnColumns) {
   return jsonOrThrow(response);
 }
 
-export function exportExcel(jobId) {
-  window.location.href = `/api/jobs/${jobId}/export`;
+export async function exportExcel(jobId, rowIndices) {
+  await downloadPost(`/api/jobs/${jobId}/incidents/export`, { rowIndices }, "clustered_incidents.xlsx");
 }
 
+export async function fetchReview(jobId) {
+  return jsonOrThrow(await fetch(`/api/jobs/${jobId}/review`));
+}
+export async function mutateReview(jobId, payload) {
+  return jsonOrThrow(await fetch(`/api/jobs/${jobId}/review/mutate`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  }));
+}
+export async function saveSession(jobId, view) {
+  return downloadPost(`/api/jobs/${jobId}/session/save`, view, "incident_analysis.icas");
+}
 export async function exportClusterViewExcel(jobId, payload) {
   await downloadPost(`/api/jobs/${jobId}/cluster-view/export`, payload, "cluster_view.xlsx");
 }

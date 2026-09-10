@@ -28,7 +28,7 @@
           <div class="toolbar">
             <label class="button">
               Load Session
-              <input id="sessionInput" type="file" accept=".json" />
+              <input id="sessionInput" type="file" accept=".icas" />
             </label>
             <label class="button primary">
               Open CSV/XLSX
@@ -87,15 +87,14 @@
           <h2>Results</h2>
           <div class="toolbar">
             <button id="downloadSession">Save Session</button>
-            <button id="downloadReviewState">Save Review State</button>
-            <label class="button">
-              Load Review State
-              <input id="reviewStateInput" type="file" accept=".json" />
-            </label>
             <button id="exportClusterView">Export Cluster View</button>
             <button id="exportExcel" class="primary">Export Excel</button>
           </div>
         </div>
+        <p id="reviewSaveStatus" class="muted" role="status"></p>
+        <details class="workflow-filters"><summary>Filter by workflow state</summary>
+          <div id="workflowFilters"></div><button id="clearWorkflowFilter" type="button">Show all states</button>
+        </details>
         <div id="resultStats" class="stats"></div>
         <div class="results-layout">
           <aside id="clusterList" class="cluster-list"></aside>
@@ -123,6 +122,14 @@
           </section>
         </div>
       </section>
+
+      <dialog id="workflowDialog" class="workflow-dialog" aria-labelledby="workflowDialogTitle">
+        <header class="workflow-dialog-header">
+          <h2 id="workflowDialogTitle">Status and comments</h2>
+          <button id="closeWorkflow" type="button" autofocus>Close</button>
+        </header>
+        <section id="workflowPanel" class="workflow-panel" aria-label="Cluster or theme workflow"></section>
+      </dialog>
 
       <section id="pivot" class="screen">
         <div class="section-head">

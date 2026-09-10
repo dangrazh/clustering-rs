@@ -11,7 +11,9 @@ NuGet.Config
 Tests/
 *.md
 *.example.json
-src/IncidentClusteringAnalyzer/obj/
-src/IncidentClusteringAnalyzer/bin/
-src/IncidentClusteringAnalyzer.Core/obj/
-src/IncidentClusteringAnalyzer.Core/bin/
+/tests
+# src/IncidentClusteringAnalyzer/obj/
+# src/IncidentClusteringAnalyzer/bin/
+# src/IncidentClusteringAnalyzer.Core/obj/
+# src/IncidentClusteringAnalyzer.Core/bin/
+

@@ -16,9 +16,9 @@ pub fn summarize_cluster(
         [first, second, third] => {
             sentence_case(&format!("{first}, {second} and {third} related issues"))
         }
-        [first, second, third, fourth, ..] => {
-            sentence_case(&format!("{first}, {second}, {third} and {fourth} related issues"))
-        }
+        [first, second, third, fourth, ..] => sentence_case(&format!(
+            "{first}, {second}, {third} and {fourth} related issues"
+        )),
     }
 }
 
@@ -62,12 +62,14 @@ pub fn representative_keywords(
             (term, count, score)
         })
         .collect::<Vec<_>>();
-    terms.sort_by(|(left_term, left_count, left_score), (right_term, right_count, right_score)| {
-        right_score
-            .total_cmp(left_score)
-            .then_with(|| right_count.cmp(left_count))
-            .then_with(|| left_term.cmp(right_term))
-    });
+    terms.sort_by(
+        |(left_term, left_count, left_score), (right_term, right_count, right_score)| {
+            right_score
+                .total_cmp(left_score)
+                .then_with(|| right_count.cmp(left_count))
+                .then_with(|| left_term.cmp(right_term))
+        },
+    );
 
     terms
         .into_iter()

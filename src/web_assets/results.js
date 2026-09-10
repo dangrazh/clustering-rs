@@ -1,47 +1,27 @@
-import { exportClusterViewExcel, exportExcel, exportPivotExcel, fetchPivot, fetchResult, restoreSession } from "./api.js";
+import { captureView, restoreView } from "./view-state.js";
+import { bindWorkflow, openWorkflow, renderWorkflow, renderSaveStatus, applyReviewResponse, effectiveWorkflow, selectionKey, statusLabels, stateMatches, workflowRows, displayLabel } from "./workflow.js";
+import { exportClusterViewExcel, exportExcel, exportPivotExcel, fetchPivot, fetchResult, restoreSession, fetchReview, saveSession } from "./api.js";
 import { state } from "./state.js";
-import { downloadJson, hideOverlay, setStatus, showBusy, showError, showStep, statsHtml } from "./ui.js";
+import { hideOverlay, setStatus, showBusy, showError, showStep, statsHtml } from "./ui.js";
 import { clusterId, clusterKey, escapeHtml, sameSelection } from "./utils.js";
 
 export function bindResultsEvents() {
+  bindWorkflow(() => renderResults());
+  async function saving(title, action) {
+    showBusy(title, "Preparing your download. Large sessions may take a while.");
+    try { await action(); setStatus("Download prepared."); hideOverlay(); }
+    catch (error) { showError(title, error.message); }
+  }
   document.getElementById("downloadSession").addEventListener("click", () => {
     if (!state.analysis) return;
-    showBusy("Saving session", "Preparing the session JSON file. Large sessions can take a while.");
-    try {
-      downloadJson("incident_analysis_session.json", { version: 2, run: state.analysis, reviewState: reviewStatePayload() });
-      setStatus("Session download prepared.");
-      setTimeout(hideOverlay, 600);
-    } catch (error) {
-      setStatus(error.message, true);
-      showError("Session save failed", error.message);
-    }
+    const revision = state.review.annotations.revision;
+    saving("Saving session", async () => {
+      await saveSession(state.jobId, captureView(state));
+      state.savedReviewRevision = revision; renderSaveStatus();
+    });
   });
-
-  document.getElementById("downloadReviewState").addEventListener("click", () => {
-    if (!state.analysis) return;
-    downloadJson("incident_review_state.json", { version: 1, reviewState: reviewStatePayload() });
-  });
-
-  document.getElementById("reviewStateInput").addEventListener("change", async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const payload = JSON.parse(await file.text());
-      applyReviewState(payload.reviewState || payload);
-      renderClusterList();
-      setStatus(`Loaded review state from ${file.name}.`);
-    } catch (error) {
-      setStatus(error.message, true);
-    } finally {
-      event.target.value = "";
-    }
-  });
-
   document.getElementById("exportExcel").addEventListener("click", () => {
-    if (!state.jobId) return;
-    showBusy("Exporting Excel", "Preparing the Excel export. Large result sets can take a while.");
-    exportExcel(state.jobId);
-    setTimeout(hideOverlay, 3000);
+    if (state.jobId) saving("Exporting incidents", () => exportExcel(state.jobId, visibleDetailRowIndices()));
   });
 
   document.getElementById("exportClusterView").addEventListener("click", async () => {
@@ -49,9 +29,8 @@ export function bindResultsEvents() {
     showBusy("Exporting cluster view", "Preparing the cluster tree Excel export.");
     try {
       await exportClusterViewExcel(state.jobId, {
-        drilldownRowIndices: state.detailDrilldownRowIndices,
-        reviewedClusters: [...state.reviewedClusters],
-        reviewedThemes: [...state.reviewedThemes],
+        drilldownRowIndices: treeVisibleRows() ? [...treeVisibleRows()] : null,
+        workflowStates: state.workflowStates,
       });
       setStatus("Cluster view export prepared.");
       setTimeout(hideOverlay, 600);
@@ -120,21 +99,16 @@ export function bindResultsEvents() {
 }
 
 export async function loadResult(jobId) {
-  initializeResult(await fetchResult(jobId), jobId);
-  renderResults();
-  showStep("results");
+  const [run, metadata] = await Promise.all([fetchResult(jobId), fetchReview(jobId)]);
+  initializeResult(run, jobId, metadata);
+  renderResults(); showStep("results");
+}
+export async function loadSavedSession(file) {
+  const restored = await restoreSession(file);
+  await loadResult(restored.jobId);
 }
 
-export async function loadSavedSession(payload) {
-  const run = payload?.run;
-  if (!run?.source?.headers || !Array.isArray(run.source.rows)) throw new Error("Session file is invalid.");
-  const restored = await restoreSession(run);
-  initializeResult(run, restored.jobId, payload.reviewState);
-  renderResults();
-  showStep("results");
-}
-
-function initializeResult(run, jobId, reviewState = null) {
+function initializeResult(run, jobId, metadata) {
   normalizeRunSettings(run);
   state.analysis = run;
   state.source = null;
@@ -143,9 +117,9 @@ function initializeResult(run, jobId, reviewState = null) {
   state.jobId = jobId;
   state.selection = { type: "all" };
   state.expandedClusters = new Set();
-  state.reviewedClusters = new Set();
-  state.reviewedThemes = new Set();
-  if (reviewState) applyReviewState(reviewState);
+  state.workflowStates = [];
+  applyReviewResponse(metadata);
+  state.savedReviewRevision = state.review.annotations.revision;
   state.detailPage = 1;
   state.detailColumnWidths = [];
   state.detailColumnOrder = [];
@@ -159,6 +133,7 @@ function initializeResult(run, jobId, reviewState = null) {
   state.currentPivotRows = [];
   state.selectedPivotRowIndices = null;
   state.selectedPivotRowLabel = "";
+  restoreView(state, metadata.view);
   document.querySelector('[data-step="mapping"]').disabled = true;
   document.querySelector('[data-step="analysis"]').disabled = true;
   document.querySelector('[data-step="results"]').disabled = false;
@@ -184,7 +159,7 @@ function renderResults() {
   ]);
   renderClusterList();
   renderDetailRows();
-  renderPivot();
+  renderWorkflow(() => renderResults());
 }
 
 function renderClusterList() {
@@ -220,15 +195,17 @@ function renderClusterList() {
     const clusterSelection = { type: "cluster", cluster: cluster.id };
     addClusterButton(
       row,
-      `${clusterId(cluster.id)} - ${cluster.label} (${clusterCount})`,
+      `${clusterId(cluster.id)} - ${displayLabel(state.review, String(cluster.id), cluster.label)} (${clusterCount})`,
       clusterSelection,
       "cluster-label"
     );
-    row.appendChild(reviewToggleButton("cluster", clusterSelection, isReviewed("cluster", clusterSelection)));
+    row.appendChild(workflowBadge(clusterSelection));
+    if (!stateMatches(state.review, String(cluster.id), state.workflowStates)) row.classList.add("context-parent");
     list.appendChild(row);
 
     if (expanded) {
       cluster.subgroups.forEach((theme) => {
+        if (!stateMatches(state.review, `${cluster.id}:${theme.id}`, state.workflowStates)) return;
         const themeCount = filteredIncidentCount(theme.incident_row_indices, visibleRows);
         if (visibleRows && themeCount === 0) return;
         const themeSelection = { type: "theme", cluster: cluster.id, theme: theme.id };
@@ -236,11 +213,11 @@ function renderClusterList() {
         themeRow.className = "tree-row theme-row";
         addClusterButton(
           themeRow,
-          `Theme ${theme.id} - ${theme.label} (${themeCount})`,
+          `Theme ${theme.id} - ${displayLabel(state.review, `${cluster.id}:${theme.id}`, theme.label)} (${themeCount})`,
           themeSelection,
           "theme"
         );
-        themeRow.appendChild(reviewToggleButton("theme", themeSelection, isReviewed("theme", themeSelection)));
+        themeRow.appendChild(workflowBadge(themeSelection));
         list.appendChild(themeRow);
       });
     }
@@ -251,12 +228,13 @@ export function treeVisibleRows() {
   const run = state.analysis;
   const hasColumnFilters = state.detailColumnFilters.some(isDetailFilterActive);
   const hasDrilldown = Array.isArray(state.detailDrilldownRowIndices);
-  if (!run || (!hasColumnFilters && !hasDrilldown)) return null;
+  if (!run || (!hasColumnFilters && !hasDrilldown && !state.workflowStates.length)) return null;
 
   let rowIndices = run.processed_incidents.map((record) => record.source_row_index);
   rowIndices = applyDetailFilters(rowIndices, run.source.rows);
   rowIndices = applyDetailDrilldown(rowIndices);
-  return new Set(rowIndices);
+  const workflow = workflowRows(run, state.review, state.workflowStates);
+  return new Set(workflow ? rowIndices.filter(row => workflow.has(row)) : rowIndices);
 }
 
 export function filteredIncidentCount(rowIndices, visibleRows) {
@@ -267,7 +245,7 @@ export function filteredIncidentCount(rowIndices, visibleRows) {
 function addClusterButton(list, text, selection, extraClass = "") {
   const button = document.createElement("button");
   button.className = `cluster-item ${extraClass}`;
-  if (isReviewed(selection.type, selection)) button.classList.add("reviewed");
+
   if (sameSelection(selection, state.selection)) button.classList.add("active");
   button.textContent = text;
   button.addEventListener("click", () => {
@@ -275,62 +253,28 @@ function addClusterButton(list, text, selection, extraClass = "") {
     state.detailPage = 1;
     renderClusterList();
     renderDetailRows();
-    renderPivot();
+    renderWorkflow(() => renderResults());
   });
   list.appendChild(button);
   return button;
 }
 
-function reviewToggleButton(type, selection, reviewed) {
-  const button = document.createElement("button");
-  button.className = `review-toggle${reviewed ? " reviewed" : ""}`;
-  button.type = "button";
-  button.textContent = reviewed ? "Reviewed" : "Review";
-  button.setAttribute("aria-pressed", String(reviewed));
-  button.setAttribute("aria-label", `${reviewed ? "Clear reviewed state for" : "Mark reviewed"} ${type}`);
-  button.addEventListener("click", (event) => {
+function workflowBadge(selection) {
+  const key = selectionKey(selection), workflow = effectiveWorkflow(state.review, key);
+  const badge = document.createElement("button");
+  badge.type = "button";
+  badge.dataset.workflowKey = key;
+  badge.setAttribute("aria-haspopup", "dialog");
+  badge.setAttribute("aria-controls", "workflowDialog");
+  badge.setAttribute("aria-label", `Open status and comments for ${selection.type} ${key}: ${statusLabels[workflow.status]}`);
+  badge.addEventListener("click", event => {
     event.stopPropagation();
-    toggleReviewed(type, selection);
+    openWorkflow(selection, () => renderResults());
   });
-  return button;
-}
-
-function isReviewed(type, selection) {
-  if (type === "cluster") return state.reviewedClusters.has(reviewClusterKey(selection.cluster));
-  if (type === "theme") return state.reviewedThemes.has(reviewThemeKey(selection.cluster, selection.theme));
-  return false;
-}
-
-function toggleReviewed(type, selection) {
-  const set = type === "cluster" ? state.reviewedClusters : state.reviewedThemes;
-  const key = type === "cluster" ? reviewClusterKey(selection.cluster) : reviewThemeKey(selection.cluster, selection.theme);
-  if (set.has(key)) {
-    set.delete(key);
-  } else {
-    set.add(key);
-  }
-  renderClusterList();
-}
-
-function reviewClusterKey(cluster) {
-  return clusterKey(cluster);
-}
-
-function reviewThemeKey(cluster, theme) {
-  return `${clusterKey(cluster)}:${theme}`;
-}
-
-function reviewStatePayload() {
-  return {
-    reviewedClusters: [...state.reviewedClusters].sort(),
-    reviewedThemes: [...state.reviewedThemes].sort(),
-  };
-}
-
-function applyReviewState(payload) {
-  if (!payload || typeof payload !== "object") throw new Error("Review state file is invalid.");
-  state.reviewedClusters = new Set(Array.isArray(payload.reviewedClusters) ? payload.reviewedClusters.map(String) : []);
-  state.reviewedThemes = new Set(Array.isArray(payload.reviewedThemes) ? payload.reviewedThemes.map(String) : []);
+  badge.className = "state-badge";
+  badge.textContent = statusLabels[workflow.status];
+  badge.title = state.review?.annotations.entries[key]?.workflow ? "Independent workflow" : "Inherited from cluster";
+  return badge;
 }
 
 function renderDetailRows(focusFilterColumn = null, focusTarget = "search") {
@@ -373,6 +317,8 @@ function visibleDetailRowIndices() {
   let rowIndices = detailRowIndices();
   rowIndices = applyDetailFilters(rowIndices, run.source.rows);
   rowIndices = applyDetailDrilldown(rowIndices);
+  const workflow = workflowRows(run, state.review, state.workflowStates);
+  if (workflow) rowIndices = rowIndices.filter(row => workflow.has(row));
   return applyDetailSort(rowIndices, run.source.rows);
 }
 
