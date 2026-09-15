@@ -977,6 +977,8 @@ footer {
 .workflow-dialog input, .workflow-dialog select { box-sizing: border-box; }
 .workflow-form > button { justify-self: start; }
 .workflow-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.reviewer-assignment { align-items: flex-end; }
+.reviewer-assignment > label { display: grid; gap: 5px; }
 .workflow-dialog :focus-visible, button.state-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .workflow-dialog small { font-size: 13px; color: var(--muted); }
 @media (max-width: 600px) { .workflow-form { grid-template-columns: 1fr; } .workflow-panel { padding: 14px; } .workflow-dialog button { height: auto; } }

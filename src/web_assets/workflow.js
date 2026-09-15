@@ -287,7 +287,7 @@ export function renderWorkflow(onChange) {
   if(state.commentAccess)panel.querySelectorAll("[data-edit],[data-delete]").forEach(button=>{if(!state.commentAccess[button.dataset.edit||button.dataset.delete]?.canEdit)button.remove();});
   if(state.shared){
     const parent=key.split(":")[0],reviewer=state.shared.reviewers[parent]?.value;
-    const container=document.createElement("div");container.className="workflow-actions";
+    const container=document.createElement("div");container.className="workflow-actions reviewer-assignment";
     const label=document.createElement("label");label.textContent="Cluster reviewer ";const select=document.createElement("select");label.append(select);
     select.add(new Option("Unassigned",""));for(const user of state.users||[])select.add(new Option(user.name,user.id));select.value=reviewer?.userId||"";
     const assign=document.createElement("button");assign.type="button";assign.textContent="Assign";assign.onclick=()=>mutate({type:"reviewer",userId:select.value||null});
