@@ -4,13 +4,20 @@ use crate::workflow::Mutation;
 use http_body_util::Limited;
 
 #[cfg(test)]
-#[path = "../../tests/common/mod.rs"]
-mod fixtures;
+use crate::fixtures;
 
 pub(super) fn cluster_workbook(
     run: &AnalysisRun,
     review: &ReviewData,
     request: ClusterViewExportRequest,
+) -> Result<Vec<u8>> {
+    cluster_workbook_collaborative(run, review, request, None)
+}
+pub(super) fn cluster_workbook_collaborative(
+    run: &AnalysisRun,
+    review: &ReviewData,
+    request: ClusterViewExportRequest,
+    metadata: Option<&crate::storage::PortableMeta>,
 ) -> Result<Vec<u8>> {
     let selected = request
         .drilldown_row_indices
@@ -31,6 +38,7 @@ pub(super) fn cluster_workbook(
         "Implementation owner",
         "ETA",
         "Context only",
+        "Cluster reviewer",
     ];
     for (column, label) in headers.iter().enumerate() {
         sheet.write_string(0, column as u16, *label)?;
@@ -90,6 +98,19 @@ pub(super) fn cluster_workbook(
                     .map(|d| d.to_string())
                     .unwrap_or_default(),
                 if context { "Yes".into() } else { "No".into() },
+                metadata
+                    .and_then(|m| m.reviewers.get(&cluster.id.0.to_string()))
+                    .and_then(|r| {
+                        r.recorded.as_ref().map(|a| {
+                            format!(
+                                "{} <{}>{}",
+                                a.name,
+                                a.email,
+                                if r.unconfirmed { " (unconfirmed)" } else { "" }
+                            )
+                        })
+                    })
+                    .unwrap_or_default(),
             ];
             for (column, value) in values.iter().enumerate() {
                 if column == 5 {
@@ -192,6 +213,46 @@ pub(super) fn cluster_workbook(
             }
         }
     }
+    if let Some(metadata) = metadata {
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("Label and Reviewer History")?;
+        for (i, h) in [
+            "Entity",
+            "Actor",
+            "Email",
+            "Timestamp",
+            "Action",
+            "Before",
+            "After",
+            "Part",
+        ]
+        .iter()
+        .enumerate()
+        {
+            sheet.write_string(0, i as u16, *h)?;
+        }
+        let mut row = 1;
+        for event in &metadata.audit {
+            let before = excel_chunks(&event["before"].to_string());
+            let after = excel_chunks(&event["after"].to_string());
+            for part in 0..before.len().max(after.len()) {
+                let values = [
+                    event["entity"].as_str().unwrap_or(""),
+                    event["actor"]["name"].as_str().unwrap_or(""),
+                    event["actor"]["email"].as_str().unwrap_or(""),
+                    event["timestamp"].as_str().unwrap_or(""),
+                    event["action"].as_str().unwrap_or(""),
+                    before.get(part).map(String::as_str).unwrap_or(""),
+                    after.get(part).map(String::as_str).unwrap_or(""),
+                ];
+                for (col, value) in values.iter().enumerate() {
+                    sheet.write_string(row, col as u16, *value)?;
+                }
+                sheet.write_number(row, 7, (part + 1) as f64)?;
+                row += 1;
+            }
+        }
+    }
     Ok(workbook.save_to_buffer()?)
 }
 fn excel_chunks(value: &str) -> Vec<String> {
@@ -208,20 +269,12 @@ fn excel_chunks(value: &str) -> Vec<String> {
     result
 }
 
-pub(super) struct PendingReview {
-    token: String,
-    revision: u64,
-    data: ReviewData,
-}
 pub(super) fn handles(path: &str) -> bool {
     path.starts_with("/api/jobs/")
         && [
             "/review",
             "/review/mutate",
             "/session/save",
-            "/review/save",
-            "/review/prepare",
-            "/review/commit",
             "/incidents/export",
         ]
         .iter()
@@ -254,7 +307,11 @@ pub(super) fn snapshot(
         job.view.clone(),
     ))
 }
-fn review_response(review: &ReviewData, view: &ViewState) -> Result<Response<BoxBody>> {
+fn review_response(
+    review: &ReviewData,
+    view: &ViewState,
+    read_only: &HashSet<String>,
+) -> Result<Response<BoxBody>> {
     let mut actions = BTreeMap::new();
     for key in review.annotations.entries.keys() {
         let workflow = review.annotations.effective(key)?;
@@ -263,9 +320,22 @@ fn review_response(review: &ReviewData, view: &ViewState) -> Result<Response<Box
             serde_json::json!({"next":workflow.status.next(),"canUndo":workflow.path.len()>1}),
         );
     }
+    let comment_access: serde_json::Map<String, serde_json::Value> = review
+        .annotations
+        .entries
+        .values()
+        .flat_map(|e| {
+            e.comments.iter().map(|c| {
+                (
+                    c.id.clone(),
+                    serde_json::json!({"canEdit":!read_only.contains(&c.id)}),
+                )
+            })
+        })
+        .collect();
     json_response(
         StatusCode::OK,
-        &serde_json::json!({"review":review,"view":view,"allowedActions":actions}),
+        &serde_json::json!({"review":review,"view":view,"allowedActions":actions,"commentAccess":comment_access}),
     )
 }
 fn binary(bytes: Vec<u8>, name: &str) -> Result<Response<BoxBody>> {
@@ -283,10 +353,51 @@ pub(super) async fn restore(
     state: WebState,
 ) -> Result<Response<BoxBody>> {
     let bytes = body(request, session::MAX_FILE_BYTES).await?;
-    let loaded = tokio::task::spawn_blocking(move || session::decode_session(&bytes)).await??;
+    let mut loaded = tokio::task::spawn_blocking(move || session::decode_session(&bytes)).await??;
+    for reviewer in loaded.metadata.reviewers.values_mut() {
+        reviewer.user_id = None;
+        reviewer.unconfirmed = reviewer.recorded.is_some();
+    }
     let job_id = state.next_id("job");
+    let artifact = state
+        .inner
+        .artifacts
+        .publish(
+            Arc::new(loaded.run.clone()),
+            loaded.review.clone(),
+            loaded.view.clone(),
+            loaded.metadata.clone(),
+        )
+        .await?;
+    crate::jobs::retain_import(
+        &state.inner.store,
+        state.user.as_ref().context("Sign in required")?,
+        &job_id,
+        &artifact,
+    )
+    .await?;
+    crate::jobs::save_summary(
+        &state.inner.store,
+        &job_id,
+        crate::jobs::source_summary(
+            &loaded.run.source,
+            Some(loaded.run.processed_incidents.len()),
+        ),
+    )
+    .await?;
     let (sender, _) = broadcast::channel(1);
     let job = AnalysisJob {
+        owner: state.user.as_ref().context("Sign in required")?.id.clone(),
+        central: false,
+        publishing: false,
+        imported_comments: loaded
+            .review
+            .annotations
+            .entries
+            .values()
+            .flat_map(|e| e.comments.iter().map(|c| c.id.clone()))
+            .collect(),
+        metadata: loaded.metadata,
         status: JobStatus::Finished,
         message: "Binary session loaded.".into(),
         started_at: Instant::now(),
@@ -295,7 +406,6 @@ pub(super) async fn restore(
         result: Some(Arc::new(loaded.run)),
         review: Some(loaded.review),
         view: loaded.view,
-        pending_review: None,
         error: None,
         events: sender,
     };
@@ -317,7 +427,7 @@ pub(super) async fn route(
     let job = find_job(&state, id)?;
     if request.method() == Method::GET && operation == "review" {
         let (_, review, view) = snapshot(&job)?;
-        return review_response(&review, &view);
+        return review_response(&review, &view, &job.lock().unwrap().imported_comments);
     }
     anyhow::ensure!(
         request.method() == Method::POST,
@@ -325,9 +435,22 @@ pub(super) async fn route(
     );
     match operation {
         "review/mutate" => {
-            let mutation: Mutation =
+            let mut mutation: Mutation =
                 serde_json::from_slice(&body(request, 2 * 1024 * 1024).await?)?;
             let mut locked = job.lock().expect("job state poisoned");
+            anyhow::ensure!(
+                !locked.central && !locked.publishing,
+                "Analysis is being centrally saved. Retry shortly."
+            );
+            mutation.actor = state.user.as_ref().context("Sign in required")?.actor();
+            if let crate::workflow::Action::EditComment { id, .. }
+            | crate::workflow::Action::DeleteComment { id } = &mutation.action
+            {
+                anyhow::ensure!(
+                    !locked.imported_comments.contains(id),
+                    "Imported comments are read-only."
+                );
+            }
             let review = locked.review.as_mut().context("Review data not ready.")?;
             if review.annotations.revision != mutation.revision {
                 return Ok(json_error(
@@ -336,97 +459,23 @@ pub(super) async fn route(
                 ));
             }
             review.annotations.mutate(mutation)?;
-            review_response(locked.review.as_ref().unwrap(), &locked.view)
+            review_response(
+                locked.review.as_ref().unwrap(),
+                &locked.view,
+                &locked.imported_comments,
+            )
         }
         "session/save" => {
             let mut view: ViewState =
                 serde_json::from_slice(&body(request, 16 * 1024 * 1024).await?)?;
             let (run, review, _) = snapshot(&job)?;
             view.sanitize(&run);
-            let bytes =
-                tokio::task::spawn_blocking(move || session::encode_session(&run, &review, &view))
-                    .await??;
-            binary(bytes, "incident_analysis.icas")
-        }
-        "review/save" => {
-            let (_, review, _) = snapshot(&job)?;
-            binary(
-                tokio::task::spawn_blocking(move || session::encode_review(&review)).await??,
-                "incident_review.icar",
-            )
-        }
-        "review/prepare" => {
-            let bytes = body(request, session::MAX_FILE_BYTES).await?;
-            let (run, current, _) = snapshot(&job)?;
-            let revision = current.annotations.revision;
-            let data = tokio::task::spawn_blocking(move || -> Result<_> {
-                let data = session::decode_review(&bytes)?;
-                current.matches(&data)?;
-                data.annotations.validate(&run)?;
-                Ok(data)
+            let metadata = job.lock().unwrap().metadata.clone();
+            let bytes = tokio::task::spawn_blocking(move || {
+                session::encode_portable(&run, &review, &view, &metadata)
             })
             .await??;
-            let token = uuid::Uuid::new_v4().to_string();
-            let comments: usize = data
-                .annotations
-                .entries
-                .values()
-                .map(|e| e.comments.len())
-                .sum();
-            let events: usize = data
-                .annotations
-                .entries
-                .values()
-                .map(|e| e.history.len())
-                .sum();
-            let response = json_response(
-                StatusCode::OK,
-                &serde_json::json!({"token":token,"revision":revision,"comments":comments,"events":events,"entities":data.annotations.entries.len()}),
-            )?;
-            let mut locked = job.lock().expect("job state poisoned");
-            anyhow::ensure!(
-                locked.review.as_ref().unwrap().annotations.revision == revision,
-                "Review data changed during validation. Try again."
-            );
-            locked.pending_review = Some(PendingReview {
-                token,
-                revision,
-                data,
-            });
-            Ok(response)
-        }
-        "review/commit" => {
-            #[derive(Deserialize)]
-            struct Commit {
-                token: String,
-                revision: u64,
-            }
-            let payload: Commit = serde_json::from_slice(&body(request, 4096).await?)?;
-            let mut locked = job.lock().expect("job state poisoned");
-            let pending = locked
-                .pending_review
-                .as_ref()
-                .context("No validated review import. Select the file again.")?;
-            anyhow::ensure!(
-                pending.token == payload.token && pending.revision == payload.revision,
-                "Import confirmation does not match the validated file."
-            );
-            let current = locked.review.as_ref().unwrap();
-            if current.annotations.revision != payload.revision {
-                return Ok(json_error(
-                    StatusCode::CONFLICT,
-                    "Review data changed since validation. Select the file again.",
-                ));
-            }
-            let next = current
-                .annotations
-                .revision
-                .checked_add(1)
-                .context("Review revision exhausted.")?;
-            let mut data = locked.pending_review.take().unwrap().data;
-            data.annotations.revision = next;
-            locked.review = Some(data);
-            review_response(locked.review.as_ref().unwrap(), &locked.view)
+            binary(bytes, "incident_analysis.icas")
         }
         "incidents/export" => {
             #[derive(Deserialize)]

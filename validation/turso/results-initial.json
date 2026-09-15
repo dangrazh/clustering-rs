@@ -1,0 +1,74 @@
+{
+  "environment": {
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+    "cpu_count": 12,
+    "meminfo": [
+      "MemTotal:       15956612 kB",
+      "MemFree:        12267956 kB",
+      "MemAvailable:   15049216 kB"
+    ],
+    "filesystem": "Filesystem     Type  1K-blocks    Used Available Use% Mounted on\n/dev/sdd       ext4 1055762868 9189676 992869720   1% /\n",
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "root": "/tmp/clustering-turso-validation-bi1rflw9"
+  },
+  "runs": [
+    {
+      "mode": "suite",
+      "engine": "sqlite",
+      "exit_code": -15,
+      "stdout": "{\"detail\":\"wal\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\n{\"detail\":{\"error\":\"FOREIGN KEY constraint failed\",\"rejected\":true},\"probe\":\"foreign_key\"}\n{\"detail\":{\"join\":true,\"migration\":true,\"rollback\":true,\"unique\":true},\"probe\":\"schema\"}\n{\"detail\":{\"elapsed_ms\":291,\"max_ms\":277.383186,\"p50_ms\":1.157387,\"p95_ms\":2.972062,\"p99_ms\":255.212139,\"retries\":140,\"transactions\":200,\"users\":10},\"probe\":\"load\"}\n",
+      "stderr": "",
+      "trial": 0,
+      "elapsed_seconds": 75.700320019
+    },
+    {
+      "mode": "kill",
+      "engine": "sqlite",
+      "trial": 0,
+      "reached_fault_point": true,
+      "exit_code": -9,
+      "stdout": "{\"detail\":\"wal\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\nACKNOWLEDGED\nUNCOMMITTED\n",
+      "stderr": ""
+    },
+    {
+      "mode": "verify",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 0,
+      "elapsed_seconds": 0.004655710999998064
+    },
+    {
+      "mode": "verify",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 0,
+      "backup_method": "stopped-process copy of complete DB directory",
+      "backup_sha256": {
+        "analysis.db": "c9350ae73ea063bf9981d3def9a83898137161a277c6a9bf838c078482bb3024"
+      },
+      "elapsed_seconds": 0.002135404999989987
+    },
+    {
+      "mode": "suite",
+      "engine": "turso",
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "unexpected row during execution\n",
+      "trial": 0,
+      "elapsed_seconds": 0.016254665000019486
+    },
+    {
+      "mode": "kill",
+      "engine": "turso",
+      "trial": 0,
+      "reached_fault_point": false,
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "unexpected row during execution\n"
+    }
+  ]
+}

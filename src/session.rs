@@ -124,6 +124,14 @@ pub struct LoadedSession {
     pub run: AnalysisRun,
     pub review: ReviewData,
     pub view: ViewState,
+    pub metadata: crate::storage::PortableMeta,
+}
+#[derive(Serialize, Deserialize)]
+struct SessionV3<'a> {
+    session: SessionWire<'a>,
+    reviewers: std::collections::BTreeMap<String, crate::storage::Reviewer>,
+    // JSON audit records keep future event variants independent of Postcard enums.
+    audit: Vec<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct SessionWire<'a> {
@@ -447,7 +455,7 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8], kind: u8) -> Result<T> {
     );
     ensure!(bytes.len() <= MAX_FILE_BYTES, "File is too large.");
     ensure!(
-        matches!(u16::from_le_bytes([bytes[8], bytes[9]]), 1 | 2) && bytes[11] == 1,
+        matches!(u16::from_le_bytes([bytes[8], bytes[9]]), 1..=3) && bytes[11] == 1,
         "Unsupported session version or codec."
     );
     ensure!(
@@ -487,6 +495,18 @@ pub fn encode_session_level(
     view: &ViewState,
     level: i32,
 ) -> Result<Vec<u8>> {
+    validate_text_fields(run)?;
+    encode(
+        1,
+        &SessionWire {
+            run: RunWire::from_run(run),
+            review: Cow::Borrowed(review),
+            view: Cow::Borrowed(view),
+        },
+        level,
+    )
+}
+fn validate_text_fields(run: &AnalysisRun) -> Result<()> {
     // Reject a save that could not be read back using the bounded text scratch buffer.
     for text in run
         .source
@@ -505,18 +525,24 @@ pub fn encode_session_level(
             "An incident text field exceeds the 1 MiB session limit."
         );
     }
-    encode(
-        1,
-        &SessionWire {
-            run: RunWire::from_run(run),
-            review: Cow::Borrowed(review),
-            view: Cow::Borrowed(view),
-        },
-        level,
-    )
+    Ok(())
 }
 pub fn decode_session(bytes: &[u8]) -> Result<LoadedSession> {
-    let (run, review, mut view) = if bytes.get(8..10) == Some(&[1, 0]) {
+    let mut metadata = crate::storage::PortableMeta::default();
+    let (run, review, mut view) = if bytes.get(8..10) == Some(&[3, 0]) {
+        let wire: SessionV3<'_> = decode(bytes, 1)?;
+        metadata.reviewers = wire.reviewers;
+        metadata.audit = wire
+            .audit
+            .iter()
+            .map(|v| serde_json::from_str(v))
+            .collect::<std::result::Result<_, _>>()?;
+        (
+            wire.session.run.into_run()?,
+            wire.session.review.into_owned(),
+            wire.session.view.into_owned(),
+        )
+    } else if bytes.get(8..10) == Some(&[1, 0]) {
         let wire: SessionV1<'_> = decode(bytes, 1)?;
         (
             wire.run.into_run()?,
@@ -534,12 +560,57 @@ pub fn decode_session(bytes: &[u8]) -> Result<LoadedSession> {
     validate_run(&run)?;
     review.validate(&run)?;
     view.sanitize(&run);
-    Ok(LoadedSession { run, review, view })
+    ensure!(
+        metadata
+            .reviewers
+            .keys()
+            .all(|key| !key.contains(':') && review.annotations.entries.contains_key(key)),
+        "Invalid imported reviewer entity"
+    );
+    Ok(LoadedSession {
+        run,
+        review,
+        view,
+        metadata,
+    })
+}
+pub fn encode_portable(
+    run: &AnalysisRun,
+    review: &ReviewData,
+    view: &ViewState,
+    metadata: &crate::storage::PortableMeta,
+) -> Result<Vec<u8>> {
+    validate_text_fields(run)?;
+    let audit = metadata
+        .audit
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    ensure!(
+        audit.iter().all(|v| v.len() < 1024 * 1024),
+        "Audit record exceeds session field limit"
+    );
+    let wire = SessionV3 {
+        session: SessionWire {
+            run: RunWire::from_run(run),
+            review: Cow::Borrowed(review),
+            view: Cow::Borrowed(view),
+        },
+        reviewers: metadata.reviewers.clone(),
+        audit,
+    };
+    let mut bytes = encode(1, &wire, COMPRESSION_LEVEL)?;
+    bytes[8..10].copy_from_slice(&3u16.to_le_bytes());
+    Ok(bytes)
 }
 pub fn encode_review(review: &ReviewData) -> Result<Vec<u8>> {
     encode(2, review, COMPRESSION_LEVEL)
 }
 pub fn decode_review(bytes: &[u8]) -> Result<ReviewData> {
+    ensure!(
+        bytes.get(8..10) != Some(&[3, 0]),
+        "Review replacement is not supported by shared session files"
+    );
     if bytes.get(8..10) == Some(&[1, 0]) {
         Ok(ReviewData::from(decode::<ReviewV1>(bytes, 2)?))
     } else {

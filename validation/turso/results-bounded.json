@@ -1,0 +1,262 @@
+{
+  "environment": {
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+    "cpu_count": 12,
+    "meminfo": [
+      "MemTotal:       15956620 kB",
+      "MemFree:        12758604 kB",
+      "MemAvailable:   14970124 kB"
+    ],
+    "filesystem": "Filesystem     Type  1K-blocks    Used Available Use% Mounted on\n/dev/sdd       ext4 1055762868 9226480 992832916   1% /\n",
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "root": "/tmp/clustering-turso-validation-7znyu9dw"
+  },
+  "runs": [
+    {
+      "mode": "suite",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":\"wal\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\n{\"detail\":{\"error\":\"FOREIGN KEY constraint failed\",\"rejected\":true},\"probe\":\"foreign_key\"}\n{\"detail\":{\"join\":true,\"migration\":true,\"rollback\":true,\"unique\":true},\"probe\":\"schema\"}\n{\"detail\":{\"elapsed_ms\":271,\"max_ms\":254.965265,\"p50_ms\":1.068891,\"p95_ms\":15.429306,\"p99_ms\":232.729252,\"retries\":140,\"transactions\":200,\"users\":10,\"writer_cap\":10},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":1137,\"max_ms\":1115.6679009999998,\"p50_ms\":0.47669100000000003,\"p95_ms\":28.727131999999997,\"p99_ms\":896.6028809999999,\"retries\":1747,\"transactions\":1000,\"users\":50,\"writer_cap\":50},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":802,\"max_ms\":785.23969,\"p50_ms\":0.491351,\"p95_ms\":58.163165,\"p99_ms\":599.549799,\"retries\":317,\"transactions\":1000,\"users\":50,\"writer_cap\":8},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":713,\"max_ms\":696.449853,\"p50_ms\":0.477479,\"p95_ms\":91.814999,\"p99_ms\":562.806803,\"retries\":157,\"transactions\":1000,\"users\":50,\"writer_cap\":4},\"probe\":\"load\"}\n{\"detail\":{\"first\":\"committed\",\"later\":\"stale\",\"retry\":\"replayed\"},\"probe\":\"idempotency_and_stale\"}\n{\"detail\":{\"owner_checks\":true,\"reviewer_separate\":true,\"stale_comment_preserved\":true},\"probe\":\"metadata_and_comments\"}\n{\"detail\":{\"error\":null,\"supported\":true},\"probe\":\"vacuum_into\"}\n{\"detail\":{\"concurrent_writes_during_backup\":false,\"label_matches\":true,\"table_counts_match\":true},\"probe\":\"vacuum_restore\"}\n",
+      "stderr": "",
+      "trial": 0,
+      "elapsed_seconds": 2.987801741
+    },
+    {
+      "mode": "suite",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":\"wal\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\n{\"detail\":{\"error\":\"FOREIGN KEY constraint failed\",\"rejected\":true},\"probe\":\"foreign_key\"}\n{\"detail\":{\"join\":true,\"migration\":true,\"rollback\":true,\"unique\":true},\"probe\":\"schema\"}\n{\"detail\":{\"elapsed_ms\":315,\"max_ms\":298.156448,\"p50_ms\":1.2127,\"p95_ms\":3.341006,\"p99_ms\":277.022217,\"retries\":147,\"transactions\":200,\"users\":10,\"writer_cap\":10},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":1074,\"max_ms\":1029.3756620000001,\"p50_ms\":0.494629,\"p95_ms\":106.388156,\"p99_ms\":765.135089,\"retries\":1938,\"transactions\":1000,\"users\":50,\"writer_cap\":50},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":713,\"max_ms\":696.555072,\"p50_ms\":0.49118199999999995,\"p95_ms\":41.909262000000005,\"p99_ms\":530.096558,\"retries\":300,\"transactions\":1000,\"users\":50,\"writer_cap\":8},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":756,\"max_ms\":740.0641430000001,\"p50_ms\":0.481877,\"p95_ms\":85.871744,\"p99_ms\":583.893632,\"retries\":161,\"transactions\":1000,\"users\":50,\"writer_cap\":4},\"probe\":\"load\"}\n{\"detail\":{\"first\":\"committed\",\"later\":\"stale\",\"retry\":\"replayed\"},\"probe\":\"idempotency_and_stale\"}\n{\"detail\":{\"owner_checks\":true,\"reviewer_separate\":true,\"stale_comment_preserved\":true},\"probe\":\"metadata_and_comments\"}\n{\"detail\":{\"error\":null,\"supported\":true},\"probe\":\"vacuum_into\"}\n{\"detail\":{\"concurrent_writes_during_backup\":false,\"label_matches\":true,\"table_counts_match\":true},\"probe\":\"vacuum_restore\"}\n",
+      "stderr": "",
+      "trial": 1,
+      "elapsed_seconds": 2.917456819
+    },
+    {
+      "mode": "suite",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":\"wal\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\n{\"detail\":{\"error\":\"FOREIGN KEY constraint failed\",\"rejected\":true},\"probe\":\"foreign_key\"}\n{\"detail\":{\"join\":true,\"migration\":true,\"rollback\":true,\"unique\":true},\"probe\":\"schema\"}\n{\"detail\":{\"elapsed_ms\":272,\"max_ms\":254.875343,\"p50_ms\":1.003371,\"p95_ms\":3.482419,\"p99_ms\":234.014973,\"retries\":131,\"transactions\":200,\"users\":10,\"writer_cap\":10},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":1184,\"max_ms\":1161.7391109999999,\"p50_ms\":0.475356,\"p95_ms\":28.798440000000003,\"p99_ms\":939.980044,\"retries\":1820,\"transactions\":1000,\"users\":50,\"writer_cap\":50},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":945,\"max_ms\":850.891009,\"p50_ms\":0.551435,\"p95_ms\":189.860854,\"p99_ms\":663.333571,\"retries\":577,\"transactions\":1000,\"users\":50,\"writer_cap\":8},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":750,\"max_ms\":682.185707,\"p50_ms\":0.47999400000000003,\"p95_ms\":85.991294,\"p99_ms\":554.149204,\"retries\":184,\"transactions\":1000,\"users\":50,\"writer_cap\":4},\"probe\":\"load\"}\n{\"detail\":{\"first\":\"committed\",\"later\":\"stale\",\"retry\":\"replayed\"},\"probe\":\"idempotency_and_stale\"}\n{\"detail\":{\"owner_checks\":true,\"reviewer_separate\":true,\"stale_comment_preserved\":true},\"probe\":\"metadata_and_comments\"}\n{\"detail\":{\"error\":null,\"supported\":true},\"probe\":\"vacuum_into\"}\n{\"detail\":{\"concurrent_writes_during_backup\":false,\"label_matches\":true,\"table_counts_match\":true},\"probe\":\"vacuum_restore\"}\n",
+      "stderr": "",
+      "trial": 2,
+      "elapsed_seconds": 3.210791638
+    },
+    {
+      "mode": "kill",
+      "engine": "sqlite",
+      "trial": 0,
+      "reached_fault_point": true,
+      "exit_code": -9,
+      "stdout": "{\"detail\":\"wal\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\nACKNOWLEDGED\nUNCOMMITTED\n",
+      "stderr": ""
+    },
+    {
+      "mode": "verify",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 0,
+      "elapsed_seconds": 0.00385367400000014
+    },
+    {
+      "mode": "verify",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 0,
+      "backup_method": "stopped-process copy of complete DB directory",
+      "backup_sha256": {
+        "analysis.db": "1bc456da1b88dd7c38ad4a596c90e4ad84250d9c598a60fc3dbcf5c80f22944d"
+      },
+      "elapsed_seconds": 0.0018759109999990642
+    },
+    {
+      "mode": "kill",
+      "engine": "sqlite",
+      "trial": 1,
+      "reached_fault_point": true,
+      "exit_code": -9,
+      "stdout": "{\"detail\":\"wal\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\nACKNOWLEDGED\nUNCOMMITTED\n",
+      "stderr": ""
+    },
+    {
+      "mode": "verify",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 1,
+      "elapsed_seconds": 0.004053309999999755
+    },
+    {
+      "mode": "verify",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 1,
+      "backup_method": "stopped-process copy of complete DB directory",
+      "backup_sha256": {
+        "analysis.db": "1bc456da1b88dd7c38ad4a596c90e4ad84250d9c598a60fc3dbcf5c80f22944d"
+      },
+      "elapsed_seconds": 0.001606612999999868
+    },
+    {
+      "mode": "kill",
+      "engine": "sqlite",
+      "trial": 2,
+      "reached_fault_point": true,
+      "exit_code": -9,
+      "stdout": "{\"detail\":\"wal\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\nACKNOWLEDGED\nUNCOMMITTED\n",
+      "stderr": ""
+    },
+    {
+      "mode": "verify",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 2,
+      "elapsed_seconds": 0.0037588490000004526
+    },
+    {
+      "mode": "verify",
+      "engine": "sqlite",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 2,
+      "backup_method": "stopped-process copy of complete DB directory",
+      "backup_sha256": {
+        "analysis.db": "1bc456da1b88dd7c38ad4a596c90e4ad84250d9c598a60fc3dbcf5c80f22944d"
+      },
+      "elapsed_seconds": 0.001788742000000454
+    },
+    {
+      "mode": "suite",
+      "engine": "turso",
+      "exit_code": 0,
+      "stdout": "{\"detail\":\"mvcc\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\n{\"detail\":{\"error\":\"INSERT INTO labels VALUES(1001,9999,'orphan',0)\",\"rejected\":true},\"probe\":\"foreign_key\"}\n{\"detail\":{\"join\":true,\"migration\":true,\"rollback\":true,\"unique\":true},\"probe\":\"schema\"}\n{\"detail\":{\"elapsed_ms\":236,\"max_ms\":56.18653,\"p50_ms\":8.411271,\"p95_ms\":31.123358,\"p99_ms\":43.135725,\"retries\":0,\"transactions\":200,\"users\":10,\"writer_cap\":10},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":14491,\"max_ms\":7596.018203,\"p50_ms\":419.99102100000005,\"p95_ms\":2103.6814050000003,\"p99_ms\":3259.100761,\"retries\":0,\"transactions\":1000,\"users\":50,\"writer_cap\":50},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":1402,\"max_ms\":1313.23603,\"p50_ms\":8.818306999999999,\"p95_ms\":233.941213,\"p99_ms\":884.3725049999999,\"retries\":0,\"transactions\":1000,\"users\":50,\"writer_cap\":8},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":1192,\"max_ms\":1113.017645,\"p50_ms\":3.852757,\"p95_ms\":182.42241,\"p99_ms\":890.4380520000001,\"retries\":0,\"transactions\":1000,\"users\":50,\"writer_cap\":4},\"probe\":\"load\"}\n{\"detail\":{\"first\":\"committed\",\"later\":\"stale\",\"retry\":\"replayed\"},\"probe\":\"idempotency_and_stale\"}\n{\"detail\":{\"error\":\"UPDATE assignments SET reviewer=2,version=1 WHERE id=0\",\"rejected\":true},\"probe\":\"same_row_conflict\"}\n{\"detail\":{\"edit_committed_after_archive\":true,\"error\":null,\"interpretation\":\"If true, application lifecycle coordination is required.\"},\"probe\":\"unguarded_archive_race\"}\n{\"detail\":{\"owner_checks\":true,\"reviewer_separate\":true,\"stale_comment_preserved\":true},\"probe\":\"metadata_and_comments\"}\n{\"detail\":{\"error\":null,\"stale_parent_read_committed\":true},\"probe\":\"unguarded_parent_theme_race\"}\n{\"detail\":{\"both_committed\":true},\"probe\":\"overlapping_independent_writers\"}\n{\"detail\":{\"exclusive_change_waited_for_edit\":true,\"next_edit_sees_change\":true},\"probe\":\"guarded_archive\"}\n{\"detail\":{\"exclusive_change_waited_for_edit\":true,\"next_edit_sees_change\":true},\"probe\":\"guarded_parent_theme\"}\n{\"detail\":{\"full_sse_not_tested\":true,\"postcommit_publication_recovers_it\":true,\"preallocated_cursor_misses_late_commit\":true},\"probe\":\"out_of_order_delivery\"}\n{\"detail\":{\"error\":null,\"supported\":true},\"probe\":\"vacuum_into\"}\n{\"detail\":{\"concurrent_writes_during_backup\":false,\"label_matches\":true,\"table_counts_match\":true},\"probe\":\"vacuum_restore\"}\n",
+      "stderr": "",
+      "trial": 0,
+      "elapsed_seconds": 17.593994107000004
+    },
+    {
+      "mode": "suite",
+      "engine": "turso",
+      "exit_code": 0,
+      "stdout": "{\"detail\":\"mvcc\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\n{\"detail\":{\"error\":\"INSERT INTO labels VALUES(1001,9999,'orphan',0)\",\"rejected\":true},\"probe\":\"foreign_key\"}\n{\"detail\":{\"join\":true,\"migration\":true,\"rollback\":true,\"unique\":true},\"probe\":\"schema\"}\n{\"detail\":{\"elapsed_ms\":371,\"max_ms\":84.35116400000001,\"p50_ms\":12.699099,\"p95_ms\":46.718635,\"p99_ms\":77.753412,\"retries\":0,\"transactions\":200,\"users\":10,\"writer_cap\":10},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":15327,\"max_ms\":5779.978098,\"p50_ms\":432.032586,\"p95_ms\":2344.110452,\"p99_ms\":3883.403917,\"retries\":0,\"transactions\":1000,\"users\":50,\"writer_cap\":50},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":1371,\"max_ms\":1269.3111470000001,\"p50_ms\":8.154342999999999,\"p95_ms\":223.805613,\"p99_ms\":900.914206,\"retries\":0,\"transactions\":1000,\"users\":50,\"writer_cap\":8},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":1158,\"max_ms\":1044.8086919999998,\"p50_ms\":3.57292,\"p95_ms\":194.348931,\"p99_ms\":834.808947,\"retries\":0,\"transactions\":1000,\"users\":50,\"writer_cap\":4},\"probe\":\"load\"}\n{\"detail\":{\"first\":\"committed\",\"later\":\"stale\",\"retry\":\"replayed\"},\"probe\":\"idempotency_and_stale\"}\n{\"detail\":{\"error\":\"UPDATE assignments SET reviewer=2,version=1 WHERE id=0\",\"rejected\":true},\"probe\":\"same_row_conflict\"}\n{\"detail\":{\"edit_committed_after_archive\":true,\"error\":null,\"interpretation\":\"If true, application lifecycle coordination is required.\"},\"probe\":\"unguarded_archive_race\"}\n{\"detail\":{\"owner_checks\":true,\"reviewer_separate\":true,\"stale_comment_preserved\":true},\"probe\":\"metadata_and_comments\"}\n{\"detail\":{\"error\":null,\"stale_parent_read_committed\":true},\"probe\":\"unguarded_parent_theme_race\"}\n{\"detail\":{\"both_committed\":true},\"probe\":\"overlapping_independent_writers\"}\n{\"detail\":{\"exclusive_change_waited_for_edit\":true,\"next_edit_sees_change\":true},\"probe\":\"guarded_archive\"}\n{\"detail\":{\"exclusive_change_waited_for_edit\":true,\"next_edit_sees_change\":true},\"probe\":\"guarded_parent_theme\"}\n{\"detail\":{\"full_sse_not_tested\":true,\"postcommit_publication_recovers_it\":true,\"preallocated_cursor_misses_late_commit\":true},\"probe\":\"out_of_order_delivery\"}\n{\"detail\":{\"error\":null,\"supported\":true},\"probe\":\"vacuum_into\"}\n{\"detail\":{\"concurrent_writes_during_backup\":false,\"label_matches\":true,\"table_counts_match\":true},\"probe\":\"vacuum_restore\"}\n",
+      "stderr": "",
+      "trial": 1,
+      "elapsed_seconds": 18.503159134
+    },
+    {
+      "mode": "suite",
+      "engine": "turso",
+      "exit_code": 0,
+      "stdout": "{\"detail\":\"mvcc\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\n{\"detail\":{\"error\":\"INSERT INTO labels VALUES(1001,9999,'orphan',0)\",\"rejected\":true},\"probe\":\"foreign_key\"}\n{\"detail\":{\"join\":true,\"migration\":true,\"rollback\":true,\"unique\":true},\"probe\":\"schema\"}\n{\"detail\":{\"elapsed_ms\":317,\"max_ms\":64.114885,\"p50_ms\":10.023142,\"p95_ms\":45.932556999999996,\"p99_ms\":63.590532,\"retries\":0,\"transactions\":200,\"users\":10,\"writer_cap\":10},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":16131,\"max_ms\":5403.992365,\"p50_ms\":516.627937,\"p95_ms\":2408.002422,\"p99_ms\":4180.149004999999,\"retries\":0,\"transactions\":1000,\"users\":50,\"writer_cap\":50},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":1269,\"max_ms\":1130.925194,\"p50_ms\":7.700877,\"p95_ms\":205.433592,\"p99_ms\":822.3386740000001,\"retries\":0,\"transactions\":1000,\"users\":50,\"writer_cap\":8},\"probe\":\"load\"}\n{\"detail\":{\"elapsed_ms\":1184,\"max_ms\":1045.8023309999999,\"p50_ms\":3.726745,\"p95_ms\":199.59793200000001,\"p99_ms\":799.655449,\"retries\":0,\"transactions\":1000,\"users\":50,\"writer_cap\":4},\"probe\":\"load\"}\n{\"detail\":{\"first\":\"committed\",\"later\":\"stale\",\"retry\":\"replayed\"},\"probe\":\"idempotency_and_stale\"}\n{\"detail\":{\"error\":\"UPDATE assignments SET reviewer=2,version=1 WHERE id=0\",\"rejected\":true},\"probe\":\"same_row_conflict\"}\n{\"detail\":{\"edit_committed_after_archive\":true,\"error\":null,\"interpretation\":\"If true, application lifecycle coordination is required.\"},\"probe\":\"unguarded_archive_race\"}\n{\"detail\":{\"owner_checks\":true,\"reviewer_separate\":true,\"stale_comment_preserved\":true},\"probe\":\"metadata_and_comments\"}\n{\"detail\":{\"error\":null,\"stale_parent_read_committed\":true},\"probe\":\"unguarded_parent_theme_race\"}\n{\"detail\":{\"both_committed\":true},\"probe\":\"overlapping_independent_writers\"}\n{\"detail\":{\"exclusive_change_waited_for_edit\":true,\"next_edit_sees_change\":true},\"probe\":\"guarded_archive\"}\n{\"detail\":{\"exclusive_change_waited_for_edit\":true,\"next_edit_sees_change\":true},\"probe\":\"guarded_parent_theme\"}\n{\"detail\":{\"full_sse_not_tested\":true,\"postcommit_publication_recovers_it\":true,\"preallocated_cursor_misses_late_commit\":true},\"probe\":\"out_of_order_delivery\"}\n{\"detail\":{\"error\":null,\"supported\":true},\"probe\":\"vacuum_into\"}\n{\"detail\":{\"concurrent_writes_during_backup\":false,\"label_matches\":true,\"table_counts_match\":true},\"probe\":\"vacuum_restore\"}\n",
+      "stderr": "",
+      "trial": 2,
+      "elapsed_seconds": 19.155535870999998
+    },
+    {
+      "mode": "kill",
+      "engine": "turso",
+      "trial": 0,
+      "reached_fault_point": true,
+      "exit_code": -9,
+      "stdout": "{\"detail\":\"mvcc\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\nACKNOWLEDGED\nUNCOMMITTED\n",
+      "stderr": ""
+    },
+    {
+      "mode": "verify",
+      "engine": "turso",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 0,
+      "elapsed_seconds": 0.010274058999996782
+    },
+    {
+      "mode": "verify",
+      "engine": "turso",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 0,
+      "backup_method": "stopped-process copy of complete DB directory",
+      "backup_sha256": {
+        "analysis.db-log": "d6c8aceac89b3a1438a757de6475214b15b217012ebd7abe1a0108999494a3cd",
+        "analysis.db": "927b8fab8ea44574c9d4e1de2120cb0d9860b12aa23f9b794845a18f727c93bb",
+        "analysis.db-wal": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "elapsed_seconds": 0.00967375800000525
+    },
+    {
+      "mode": "kill",
+      "engine": "turso",
+      "trial": 1,
+      "reached_fault_point": true,
+      "exit_code": -9,
+      "stdout": "{\"detail\":\"mvcc\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\nACKNOWLEDGED\nUNCOMMITTED\n",
+      "stderr": ""
+    },
+    {
+      "mode": "verify",
+      "engine": "turso",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 1,
+      "elapsed_seconds": 0.009383468999999423
+    },
+    {
+      "mode": "verify",
+      "engine": "turso",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 1,
+      "backup_method": "stopped-process copy of complete DB directory",
+      "backup_sha256": {
+        "analysis.db-log": "0d85c8322d40e476e4049e09030283d3433b56a420568c4fb6c2f6a3f8903b14",
+        "analysis.db": "927b8fab8ea44574c9d4e1de2120cb0d9860b12aa23f9b794845a18f727c93bb",
+        "analysis.db-wal": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "elapsed_seconds": 0.009971487000001389
+    },
+    {
+      "mode": "kill",
+      "engine": "turso",
+      "trial": 2,
+      "reached_fault_point": true,
+      "exit_code": -9,
+      "stdout": "{\"detail\":\"mvcc\",\"probe\":\"journal_mode\"}\n{\"detail\":2,\"probe\":\"synchronous\"}\nACKNOWLEDGED\nUNCOMMITTED\n",
+      "stderr": ""
+    },
+    {
+      "mode": "verify",
+      "engine": "turso",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 2,
+      "elapsed_seconds": 0.00946598000000165
+    },
+    {
+      "mode": "verify",
+      "engine": "turso",
+      "exit_code": 0,
+      "stdout": "{\"detail\":{\"acknowledged_survives\":true,\"retry_deduplicated\":true,\"uncommitted_absent\":true},\"probe\":\"recovery\"}\n",
+      "stderr": "",
+      "trial": 2,
+      "backup_method": "stopped-process copy of complete DB directory",
+      "backup_sha256": {
+        "analysis.db-log": "dfaa1b64a03b91d7a593db61787c7f9eace59d41e4da3c2df0e6b32bc835f845",
+        "analysis.db": "927b8fab8ea44574c9d4e1de2120cb0d9860b12aa23f9b794845a18f727c93bb",
+        "analysis.db-wal": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "elapsed_seconds": 0.009381051999994838
+    }
+  ]
+}

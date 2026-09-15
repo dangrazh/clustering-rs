@@ -1,5 +1,31 @@
 import { escapeHtml } from "./utils.js";
 
+// Native prompts cannot share the application's typography or color variables.
+export function askDialog(title, message, { value, label = "Analysis name", confirmLabel = "Continue", cancel = true } = {}) {
+  return new Promise(resolve => {
+    const dialog = document.createElement("dialog"); dialog.className = "app-dialog compact";
+    const heading = document.createElement("h2"); heading.id = `dialog-${crypto.randomUUID()}`; heading.textContent = title;
+    dialog.setAttribute("aria-labelledby", heading.id);
+    const text = document.createElement("p"); text.className = "dialog-message"; text.textContent = message;
+    const form = document.createElement("form");
+    let input;
+    if (value !== undefined) {
+      const field = document.createElement("label"); field.className = "field"; field.textContent = label;
+      input = document.createElement("input"); input.value = value; input.required = true; input.maxLength = 200;
+      field.append(input); form.append(field);
+    }
+    const actions = document.createElement("div"); actions.className = "dialog-actions";
+    if (cancel) { const button = document.createElement("button"); button.type = "button"; button.textContent = "Cancel"; button.onclick = () => dialog.close(); actions.append(button); }
+    const submit = document.createElement("button"); submit.type = "submit"; submit.className = "primary"; submit.textContent = confirmLabel; actions.append(submit);
+    form.append(actions); dialog.append(heading, text, form);
+    let result = null;
+    form.onsubmit = event => { event.preventDefault(); if(input && !input.value.trim()){input.focus(); return;} result = input ? input.value.trim() : true; dialog.close(); };
+    dialog.addEventListener("close", () => { dialog.remove(); resolve(result); }, {once:true});
+    document.body.append(dialog); dialog.showModal(); (input || submit).focus(); input?.select();
+  });
+}
+export const noticeDialog = (message) => askDialog("Analysis update", message, {cancel:false, confirmLabel:"Close"});
+
 export function bindNavigation() {
   document.querySelectorAll(".steps button").forEach((button) => {
     button.addEventListener("click", () => showStep(button.dataset.step));

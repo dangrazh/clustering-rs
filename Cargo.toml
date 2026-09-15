@@ -24,7 +24,13 @@ zstd = "0.13"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2.0"
-tokio = { version = "1.52", features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio = { version = "1.52", features = ["macros", "net", "rt-multi-thread", "sync", "time", "process", "io-util", "signal", "fs"] }
+turso = { version = "=0.7.2", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+jsonwebtoken = "9.3"
+base64 = "0.22"
+fs2 = "0.4"
+unicode-normalization = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"

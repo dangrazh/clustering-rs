@@ -99,9 +99,13 @@ export function bindResultsEvents() {
 }
 
 export async function loadResult(jobId) {
+  state.loadingAnalysis=true;
+  try {
+  if (jobId.startsWith("job-")) state.analysisId = null;
   const [run, metadata] = await Promise.all([fetchResult(jobId), fetchReview(jobId)]);
   initializeResult(run, jobId, metadata);
   renderResults(); showStep("results");
+  } finally {state.loadingAnalysis=false;}
 }
 export async function loadSavedSession(file) {
   const restored = await restoreSession(file);
@@ -148,7 +152,7 @@ function normalizeRunSettings(run) {
   if (!run.settings.label_terms.excluded) run.settings.label_terms.excluded = [];
 }
 
-function renderResults() {
+export function renderResults(preserveEditor = false) {
   const run = state.analysis;
   applyResultsPaneWidth();
   document.getElementById("resultStats").innerHTML = statsHtml([
@@ -159,7 +163,7 @@ function renderResults() {
   ]);
   renderClusterList();
   renderDetailRows();
-  renderWorkflow(() => renderResults());
+  if (!preserveEditor) renderWorkflow(() => renderResults());
 }
 
 function renderClusterList() {

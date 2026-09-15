@@ -1,6 +1,7 @@
 import { state } from "./state.js";
 import { mutateReview, fetchReview } from "./api.js";
 import { escapeHtml } from "./utils.js";
+import { askDialog } from "./ui.js";
 
 export const statusLabels = {
   Review: "Review", Reviewed: "Reviewed", GetSmeFeedback: "Get SME feedback",
@@ -38,11 +39,16 @@ export function workflowRows(run, review, statuses) {
   return rows;
 }
 export function applyReviewResponse(payload) {
+  if(payload.analysis && payload.analysis.id!==state.analysisId)return;
+  if(payload.analysis && state.shared && payload.analysis.id===state.shared.analysis.id && payload.sharedRevision<state.shared.sharedRevision)return;
   state.review = payload.review;
   state.allowedActions = payload.allowedActions || {};
+  state.shared = payload.analysis ? payload : null;
+  state.commentAccess=payload.commentAccess;
 }
 export function renderSaveStatus() {
   const target = document.getElementById("reviewSaveStatus");
+  if (target && state.analysisId) {target.textContent=state.shared?.analysis.archived ? "Archived — read-only" : state.saveStatus || "Saved";return;}
   if (target) target.textContent = state.review?.annotations.revision !== state.savedReviewRevision
     ? "Unsaved review changes — use Save Session." : "Review data saved. Save a session to preserve current view settings.";
 }
@@ -50,6 +56,7 @@ let workflowTarget = null;
 let workflowBusy = false;
 export function openWorkflow(selection, onChange) {
   workflowTarget = selectionKey(selection);
+  state.presenceCluster=workflowTarget?.split(":")[0]||null;
   renderWorkflow(onChange);
   const dialog = document.getElementById("workflowDialog");
   dialog.showModal();
@@ -136,6 +143,7 @@ export function bindWorkflow(onChange) {
     if (dialog.open) return;
     const key = workflowTarget;
     workflowTarget = null;
+    state.presenceCluster=null;
     // A saved edit rebuilds the tree, so the original trigger may have been replaced.
     const trigger = [...document.querySelectorAll("[data-workflow-key]")].find(button => button.dataset.workflowKey === key);
     (trigger || document.querySelector("#clusterList .cluster-item"))?.focus();
@@ -150,10 +158,11 @@ export function bindWorkflow(onChange) {
     state.workflowStates = []; onChange();
   });
   window.addEventListener("beforeunload", event => {
-    if (state.review && state.review.annotations.revision !== state.savedReviewRevision) { event.preventDefault(); event.returnValue = ""; }
+    if (state.analysisId ? state.saveStatus && state.saveStatus!=="Saved" : state.review && state.review.annotations.revision !== state.savedReviewRevision) { event.preventDefault(); event.returnValue = ""; }
   });
 }
 function identity() {
+  if(state.user)return state.user;
   try { return JSON.parse(localStorage.getItem("incident-clustering-author-v1")) || {}; } catch { return {}; }
 }
 function dateText(value) { return value ? new Date(value).toLocaleString() : ""; }
@@ -169,12 +178,15 @@ export function renderWorkflow(onChange) {
   const panel = document.getElementById("workflowPanel"), key = workflowTarget;
   if (!key || !state.review?.annotations.entries[key]) return;
   const hadFocus = panel.contains(document.activeElement);
+  panel.dataset.dirty="false";panel.oninput=()=>{panel.dataset.dirty="true";};
   const entry = state.review.annotations.entries[key], workflow = effectiveWorkflow(state.review, key);
   const inherited = !entry.workflow, actor = identity(), assignments = workflow.assignments;
   const allowed = state.allowedActions[key] || { next: [], canUndo: false };
   const cluster = state.analysis.clusters.find(c => String(c.id) === key.split(":")[0]);
   const generatedLabel = key.includes(":") ? cluster?.subgroups.find(t => String(t.id) === key.split(":")[1])?.label : cluster?.label;
   const label = displayLabel(state.review, key, generatedLabel);
+  let base=state.shared ? structuredClone({versions:state.shared.versions,reviewers:state.shared.reviewers,commentAccess:state.shared.commentAccess}) : null;
+  let conflict=null;
   panel.innerHTML = `
     <h3 tabindex="-1">${key.includes(":") ? "Theme" : "Cluster"} ${escapeHtml(key)} — <span class="workflow-label">${escapeHtml(label || key)}</span> <button id="editLabel" type="button" class="comment-icon" aria-label="Edit label" title="Edit label">${penIcon}</button> <span class="state-badge">${statusLabels[workflow.status]}</span></h3>
     <form id="labelForm" class="label-form hidden"><label>Label<input name="label" required maxlength="500"></label><div class="workflow-actions"><button>Save label</button><button id="cancelLabel" type="button">Cancel</button></div></form>
@@ -210,6 +222,13 @@ export function renderWorkflow(onChange) {
   let busy = false;
   async function mutate(action) {
     if (busy) return;
+    if (conflict) {
+      busy = true;
+      const accepted = await askDialog("Review conflicting change", `This item changed. Current values:\n${JSON.stringify(conflict.review.annotations.entries[key],null,2)}\nCurrent label: ${conflict.review.annotations.labels[key] || "generated label"}\n\nSubmit your retained draft using these current values?`, {confirmLabel:"Submit draft"});
+      busy = false;
+      if (!accepted) return;
+      base=structuredClone({versions:conflict.versions,reviewers:conflict.reviewers,commentAccess:conflict.commentAccess});conflict=null;
+    }
     const actor = identity();
     if (!actor.name || !actor.email) { panel.querySelector(".author-settings").open = true; error("Set your editing name and email first."); return; }
     busy = true;
@@ -217,9 +236,10 @@ export function renderWorkflow(onChange) {
     document.getElementById("closeWorkflow").disabled = true;
     const controls = [...panel.querySelectorAll("button")]; controls.forEach(button => { button.disabled = true; });
     try {
-      applyReviewResponse(await mutateReview(state.jobId, { revision: state.review.annotations.revision, target: key, actor, action }));
+      applyReviewResponse(await mutateReview(state.jobId, { revision: state.review.annotations.revision, target: action.type==="reviewer"?key.split(":")[0]:key, actor, action,base }));
       onChange();
     } catch (e) {
+      if (e.snapshot) {conflict=e.snapshot;applyReviewResponse(e.snapshot);}
       // Preserve entered text on failure. Refresh metadata without overwriting the form.
       try { applyReviewResponse(await fetchReview(state.jobId)); } catch { /* Keep original error. */ }
       error(e.message); controls.forEach(button => { button.disabled = false; });
@@ -261,9 +281,41 @@ export function renderWorkflow(onChange) {
     article.querySelector("form").addEventListener("submit", event => { event.preventDefault(); mutate({ type: "editComment", id: comment.id, text: new FormData(event.target).get("text") }); });
     article.querySelector('button[type="button"]').addEventListener("click", () => renderWorkflow(onChange));
   }));
+  if(state.user){
+    const author=document.createElement("p");author.textContent=`Editing as ${state.user.name}`;panel.querySelector(".author-settings").replaceWith(author);
+  }
+  if(state.commentAccess)panel.querySelectorAll("[data-edit],[data-delete]").forEach(button=>{if(!state.commentAccess[button.dataset.edit||button.dataset.delete]?.canEdit)button.remove();});
+  if(state.shared){
+    const parent=key.split(":")[0],reviewer=state.shared.reviewers[parent]?.value;
+    const container=document.createElement("div");container.className="workflow-actions";
+    const label=document.createElement("label");label.textContent="Cluster reviewer ";const select=document.createElement("select");label.append(select);
+    select.add(new Option("Unassigned",""));for(const user of state.users||[])select.add(new Option(user.name,user.id));select.value=reviewer?.userId||"";
+    const assign=document.createElement("button");assign.type="button";assign.textContent="Assign";assign.onclick=()=>mutate({type:"reviewer",userId:select.value||null});
+    const claim=document.createElement("button");claim.type="button";claim.textContent="Claim";claim.onclick=()=>mutate({type:"reviewer",userId:state.user.id});
+    container.append(label,assign,claim);
+    if(reviewer?.unconfirmed){const note=document.createElement("span");note.textContent=`Imported reviewer: ${reviewer.recorded?.name||"unknown"} (unconfirmed)`;container.append(note);}
+    panel.querySelector("h3").after(container);
+    panel.querySelectorAll("[data-edit],[data-delete]").forEach(button=>{if(!state.shared.commentAccess[button.dataset.edit||button.dataset.delete]?.canEdit)button.remove();});
+    if(state.shared.analysis.archived)panel.querySelectorAll("button").forEach(button=>button.disabled=true);
+  }
   const events = entry.history.map(event => ({ event, source: key }));
   if (inherited) for (const event of state.review.annotations.entries[key.split(":")[0]].history) events.push({ event, source: key.split(":")[0] });
   events.sort((a,b) => b.event.timestamp.localeCompare(a.event.timestamp));
   document.getElementById("workflowHistory").innerHTML = events.length ? events.map(({event, source}) => `<article class="history-event"><strong>${escapeHtml(event.action)} · ${escapeHtml(dateText(event.timestamp))}</strong><p>${escapeHtml(event.actor.name)} &lt;${escapeHtml(event.actor.email)}&gt;${source !== key ? ` · inherited from cluster ${escapeHtml(source)}` : ""}</p><p>Before: ${escapeHtml(summary(event.before))}</p><p>After: ${escapeHtml(summary(event.after))}</p></article>`).join("") : '<p class="muted">No workflow changes yet.</p>';
   if (hadFocus) panel.querySelector("h3").focus();
+  for(const event of (state.shared?.audit||[]).filter(e=>e.entity===key||e.entity===key.split(":")[0]).sort((a,b)=>b.timestamp.localeCompare(a.timestamp))){
+    const article=document.createElement("article");article.className="history-event";
+    article.textContent=`${event.action} · ${dateText(event.timestamp)} · ${event.actor.name}: ${JSON.stringify(event.before)} → ${JSON.stringify(event.after)}`;
+    document.getElementById("workflowHistory").append(article);
+  }
+}
+
+export function refreshWorkflow(onChange){
+  const panel=document.getElementById("workflowPanel");
+  if(!workflowBusy&&panel.dataset.dirty!=="true")renderWorkflow(onChange);
+  if(state.shared?.analysis.archived){
+    panel.querySelectorAll("button").forEach(button=>{if(!button.hasAttribute("data-before-archive"))button.dataset.beforeArchive=String(button.disabled);button.disabled=true;});
+  }else{
+    panel.querySelectorAll("[data-before-archive]").forEach(button=>{button.disabled=button.dataset.beforeArchive==="true";delete button.dataset.beforeArchive;});
+  }
 }

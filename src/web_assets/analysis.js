@@ -71,7 +71,8 @@ function formatTermList(terms) {
   return Array.isArray(terms) ? terms.join("\n") : "";
 }
 
-function listenForProgress(jobId) {
+export function listenForProgress(jobId) {
+  state.analysisId=null;state.jobId=jobId;
   const events = openProgressStream(jobId);
   events.onmessage = async (message) => {
     const event = JSON.parse(message.data);

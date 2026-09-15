@@ -6,12 +6,20 @@
 .verify/
 target/
 target-codex-tests/
+data/
+node_modules/
 NuGet.Config
 *.txt
 Tests/
 *.md
+!documentation/web-architecture.md
+!documentation/multi-user-operations-20260914.md
+!documentation/multi-user-implementation-status-20260914.md
+!src/auth_fixtures/README.md
 *.example.json
 /tests
+.dockerignore
+Dockerfile
 # src/IncidentClusteringAnalyzer/obj/
 # src/IncidentClusteringAnalyzer/bin/
 # src/IncidentClusteringAnalyzer.Core/obj/

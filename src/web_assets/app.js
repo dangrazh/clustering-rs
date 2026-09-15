@@ -3,6 +3,7 @@ import { bindMappingEvents } from "./mapping.js";
 import { bindResultsEvents, bindResultsSplitter } from "./results.js";
 import { bindSourceEvents } from "./source.js";
 import { bindNavigation } from "./ui.js";
+import { initializeCollaboration } from "./collaboration.js";
 
 document.addEventListener("DOMContentLoaded", () => {
   bindNavigation();
@@ -12,4 +13,5 @@ document.addEventListener("DOMContentLoaded", () => {
   bindResultsEvents();
   bindResultsSplitter();
   syncSettings();
+  initializeCollaboration().catch(error=>console.error(error));
 });

@@ -1,10 +1,13 @@
 use crate::config::AppConfig;
+mod jobs_runtime;
 mod review_api;
+mod shared;
+#[cfg(test)]
+mod shared_tests;
 use crate::io::{import_source, import_xlsx_sheet, list_worksheets};
 use crate::model::{AnalysisRun, ColumnMapping, LabelTermPolicy, RunSettings, SourceTable};
 use crate::progress::ProgressUpdate;
 use crate::schema::{suggest_mapping, validate_mapping};
-use crate::worker::run_analysis_with_progress;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::{stream, StreamExt};
@@ -22,7 +25,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::net::TcpListener;
@@ -45,21 +47,27 @@ const UTILS_JS: &str = include_str!("web_assets/utils.js");
 const EXCEL_CELL_CHAR_LIMIT: usize = 32_767;
 const EXCEL_TRUNCATION_SUFFIX: &str = "...";
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct WebState {
     inner: Arc<AppState>,
+    user: Option<crate::storage::User>,
+    request_job: Option<Arc<Mutex<AnalysisJob>>>,
 }
 
-#[derive(Default)]
 struct AppState {
-    next_id: AtomicU64,
+    heavy_requests: Arc<tokio::sync::Semaphore>,
     sources: Mutex<HashMap<String, StoredSource>>,
     jobs: Mutex<HashMap<String, Arc<Mutex<AnalysisJob>>>>,
     config: AppConfig,
+    store: Arc<crate::storage::Store>,
+    auth: crate::auth::Auth,
+    artifacts: crate::artifacts::Artifacts,
+    presence: Mutex<HashMap<String, shared::Presence>>,
 }
 
 #[derive(Clone)]
 struct StoredSource {
+    owner: String,
     file_name: String,
     path: PathBuf,
     worksheets: Vec<String>,
@@ -67,6 +75,11 @@ struct StoredSource {
 }
 
 struct AnalysisJob {
+    owner: String,
+    central: bool,
+    publishing: bool,
+    metadata: crate::storage::PortableMeta,
+    imported_comments: HashSet<String>,
     status: JobStatus,
     message: String,
     started_at: Instant,
@@ -75,7 +88,6 @@ struct AnalysisJob {
     result: Option<Arc<AnalysisRun>>,
     review: Option<crate::session::ReviewData>,
     view: crate::session::ViewState,
-    pending_review: Option<review_api::PendingReview>,
     error: Option<String>,
     events: broadcast::Sender<ProgressEvent>,
 }
@@ -186,19 +198,42 @@ struct ErrorResponse {
 }
 
 pub async fn serve(address: SocketAddr, config: AppConfig) -> Result<()> {
+    let runtime = crate::config::RuntimeConfig::from_env()?;
+    let store = crate::storage::Store::open(runtime.data_dir, runtime.database_writers).await?;
+    crate::jobs::startup_cleanup(&store).await?;
+    let auth = crate::auth::Auth::from_env(store.clone()).await?;
+    let artifacts = crate::artifacts::Artifacts::new(store.root.clone(), runtime.cache_bytes);
     let listener = TcpListener::bind(address).await?;
     let state = WebState {
+        request_job: None,
+        user: None,
         inner: Arc::new(AppState {
-            next_id: AtomicU64::default(),
+            heavy_requests: Arc::new(tokio::sync::Semaphore::new(crate::config::number(
+                "APP_HEAVY_REQUESTS",
+                2,
+                1,
+                8,
+            )?)),
             sources: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
             config,
+            store,
+            auth,
+            artifacts,
+            presence: Mutex::new(HashMap::new()),
         }),
     };
     tracing::info!("web UI listening on http://{address}");
+    crate::jobs::interrupted(&state.inner.store).await?;
+    let supervisor = tokio::spawn(jobs_runtime::supervise(state.clone()));
+    let publisher = shared::start_publisher(state.inner.store.clone());
+    let telemetry = start_telemetry(state.inner.clone());
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
 
     loop {
-        let (stream, _) = listener.accept().await?;
+        let accepted = tokio::select! {accepted=listener.accept()=>accepted, _=&mut shutdown=>{supervisor.abort();publisher.abort();telemetry.abort();let _=supervisor.await;let _=publisher.await;let _=telemetry.await;return Ok(());}};
+        let (stream, _) = accepted?;
         let state = state.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
@@ -212,22 +247,115 @@ pub async fn serve(address: SocketAddr, config: AppConfig) -> Result<()> {
     }
 }
 
+fn start_telemetry(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let result = async {
+                let c = state.store.connect().await?;
+                let queued_jobs =
+                    crate::storage::scalar(&c, "SELECT COUNT(*) FROM jobs WHERE state='queued'")
+                        .await?;
+                let running_jobs =
+                    crate::storage::scalar(&c, "SELECT COUNT(*) FROM jobs WHERE state='running'")
+                        .await?;
+                let pending_publications =
+                    crate::storage::scalar(&c, "SELECT COUNT(*) FROM outbox WHERE published=0")
+                        .await?;
+                let cached_bytes = state.artifacts.cached_bytes().await;
+                let active_views = {
+                    let mut presence = state.presence.lock().unwrap();
+                    presence.retain(|_, p| p.seen > crate::storage::now() - 60);
+                    presence.len()
+                };
+                let free_disk_bytes = fs2::available_space(&state.store.root)?;
+                tracing::info!(
+                    queued_jobs,
+                    running_jobs,
+                    pending_publications,
+                    cached_bytes,
+                    active_views,
+                    free_disk_bytes,
+                    available_writers = state.store.writers.available_permits(),
+                    available_heavy_requests = state.heavy_requests.available_permits(),
+                    "Application runtime metrics"
+                );
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(%error, "Runtime metrics unavailable");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    })
+}
+
 async fn route(
     request: Request<Incoming>,
     state: WebState,
 ) -> Result<Response<BoxBody>, Infallible> {
     Ok(match handle(request, state).await {
         Ok(response) => response,
-        Err(err) => json_error(StatusCode::BAD_REQUEST, err.to_string()),
+        Err(err) => shared::error_response(&err),
     })
 }
 
-async fn handle(request: Request<Incoming>, state: WebState) -> Result<Response<BoxBody>> {
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Cannot register SIGTERM");
+        tokio::select! {_=term.recv()=>{},_=tokio::signal::ctrl_c()=>{}}
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn handle(request: Request<Incoming>, mut state: WebState) -> Result<Response<BoxBody>> {
     let method = request.method().clone();
     let uri = request.uri().clone();
     let path = uri.path();
+    let mut _heavy_permit = None;
+    if path.starts_with("/auth/") || path == "/login" {
+        return shared::auth_route(request, state).await;
+    }
+    if path.starts_with("/api/") {
+        shared::authorize(&request, &mut state).await?;
+        if matches!(path, "/api/import" | "/api/sessions" | "/api/analyze")
+            || [
+                "/export",
+                "/pivot",
+                "/result",
+                "/session/save",
+                "/save-central",
+                "/worksheet",
+            ]
+            .iter()
+            .any(|suffix| path.ends_with(suffix))
+        {
+            _heavy_permit = Some(
+                state
+                    .inner
+                    .heavy_requests
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| crate::storage::AppError::Busy)?,
+            );
+        }
+        shared::prepare(&request, &mut state).await?;
+        if shared::handles(path) {
+            return shared::route(request, state).await;
+        }
+    }
 
     match (method, path) {
+        (Method::GET, "/healthz") => {
+            let c = state.inner.store.connect().await?;
+            crate::storage::scalar(&c, "SELECT 1").await?;
+            json_response(StatusCode::OK, &serde_json::json!({"status":"ok"}))
+        }
         (Method::GET, "/") => Ok(text_response(
             StatusCode::OK,
             "text/html; charset=utf-8",
@@ -293,17 +421,28 @@ async fn handle(request: Request<Incoming>, state: WebState) -> Result<Response<
             "text/javascript; charset=utf-8",
             include_str!("web_assets/view-state.js"),
         )),
+        (Method::GET, "/collaboration.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            include_str!("web_assets/collaboration.js"),
+        )),
         (_, path) if review_api::handles(path) => review_api::route(path, request, state).await,
         (Method::POST, "/api/import") => import_endpoint(request, state).await,
         (Method::POST, "/api/sessions") => restore_session_endpoint(request, state).await,
         (Method::POST, "/api/analyze") => start_analysis_endpoint(request, state).await,
-        (Method::GET, path)
+        (Method::POST, path)
             if path.starts_with("/api/sources/") && path.ends_with("/worksheet") =>
         {
             worksheet_endpoint(&uri, state).await
         }
         (Method::GET, path) if path.starts_with("/api/jobs/") && path.ends_with("/events") => {
-            events_endpoint(path, state)
+            let cookies = request
+                .headers()
+                .get(header::COOKIE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned();
+            events_endpoint(path, state, cookies)
         }
         (Method::GET, path) if path.starts_with("/api/jobs/") && path.ends_with("/result") => {
             result_endpoint(path, state).await
@@ -336,31 +475,62 @@ async fn import_endpoint(request: Request<Incoming>, state: WebState) -> Result<
         .cloned()
         .filter(|name| !name.trim().is_empty())
         .context("filename query parameter is required")?;
-    let body = request.into_body().collect().await?.to_bytes();
+    let body = http_body_util::Limited::new(request.into_body(), 128 * 1024 * 1024)
+        .collect()
+        .await
+        .map_err(|e| anyhow::anyhow!("Upload is too large or incomplete: {e}"))?
+        .to_bytes();
     anyhow::ensure!(!body.is_empty(), "uploaded file is empty");
 
     let source_id = state.next_id("source");
-    let path = upload_path(&source_id, &file_name);
+    let extension = Path::new(&file_name)
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or("dat");
+    let path = state
+        .inner
+        .store
+        .root
+        .join("inputs")
+        .join(format!("upload-{source_id}.{extension}"));
     std::fs::write(&path, &body).with_context(|| format!("failed to write {}", path.display()))?;
 
-    let worksheets = if is_excel(&path) {
-        list_worksheets(&path)?
-    } else {
-        Vec::new()
-    };
-    let source = if let Some(sheet) = worksheets.first() {
-        import_xlsx_sheet(&path, sheet)?
-    } else {
-        import_source(&path)?
-    };
+    let parse_path = path.clone();
+    let (worksheets, source) = tokio::task::spawn_blocking(move || {
+        let worksheets = if is_excel(&parse_path) {
+            list_worksheets(&parse_path)?
+        } else {
+            Vec::new()
+        };
+        let source = if let Some(sheet) = worksheets.first() {
+            import_xlsx_sheet(&parse_path, sheet)?
+        } else {
+            import_source(&parse_path)?
+        };
+        anyhow::ensure!(
+            source.rows.len() <= 200_000 && source.headers.len() <= 512,
+            "Source exceeds 200,000 rows or 512 columns"
+        );
+        Ok::<_, anyhow::Error>((worksheets, source))
+    })
+    .await??;
 
     let stored = StoredSource {
+        owner: state.user.as_ref().context("Sign in required")?.id.clone(),
         file_name,
         path,
         worksheets,
         source,
     };
     let response = source_response(&source_id, &stored);
+    {
+        let mut sources = state.inner.sources.lock().unwrap();
+        sources.retain(|_, s| s.owner != stored.owner);
+        anyhow::ensure!(
+            sources.len() < 50,
+            "Too many active source uploads. Retry later."
+        );
+    }
     state
         .inner
         .sources
@@ -382,13 +552,24 @@ async fn worksheet_endpoint(uri: &http::Uri, state: WebState) -> Result<Response
         .get("sheet")
         .context("sheet query parameter is required")?;
 
+    let input = {
+        let sources = state.inner.sources.lock().expect("source state poisoned");
+        let stored = sources.get(source_id).context("source not found")?;
+        anyhow::ensure!(
+            stored.worksheets.contains(sheet),
+            "worksheet was not found in the uploaded workbook"
+        );
+        stored.path.clone()
+    };
+    let sheet = sheet.clone();
+    let source = tokio::task::spawn_blocking(move || import_xlsx_sheet(&input, &sheet)).await??;
+    anyhow::ensure!(
+        source.rows.len() <= 200_000 && source.headers.len() <= 512,
+        "Source exceeds the row or column limit"
+    );
     let mut sources = state.inner.sources.lock().expect("source state poisoned");
     let stored = sources.get_mut(source_id).context("source not found")?;
-    anyhow::ensure!(
-        stored.worksheets.iter().any(|candidate| candidate == sheet),
-        "worksheet was not found in the uploaded workbook"
-    );
-    stored.source = import_xlsx_sheet(&stored.path, sheet)?;
+    stored.source = source;
     let response = source_response(source_id, stored);
     json_response(StatusCode::OK, &response)
 }
@@ -397,13 +578,28 @@ async fn start_analysis_endpoint(
     request: Request<Incoming>,
     state: WebState,
 ) -> Result<Response<BoxBody>> {
-    let body = request.into_body().collect().await?.to_bytes();
+    let body = http_body_util::Limited::new(request.into_body(), 16 * 1024 * 1024)
+        .collect()
+        .await
+        .map_err(|e| anyhow::anyhow!("Request too large or incomplete: {e}"))?
+        .to_bytes();
     let mut payload: StartAnalysisRequest = serde_json::from_slice(&body)?;
     let source = {
         let sources = state.inner.sources.lock().expect("source state poisoned");
         sources
             .get(&payload.source_id)
-            .map(|stored| stored.source.clone())
+            .filter(|stored| state.user.as_ref().is_some_and(|u| u.id == stored.owner))
+            .map(|stored| {
+                let mut source = stored.source.clone();
+                source.source_path = Some(PathBuf::from(
+                    stored
+                        .file_name
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or(&stored.file_name),
+                ));
+                source
+            })
             .context("source not found")?
     };
     validate_mapping(&payload.mapping, &source)?;
@@ -412,18 +608,31 @@ async fn start_analysis_endpoint(
         &payload.settings.label_terms,
     );
 
-    let job_id = state.next_id("job");
+    let job_id = crate::jobs::enqueue(
+        &state.inner.store,
+        state.user.as_ref().context("Sign in required")?,
+        crate::jobs::Input {
+            source,
+            mapping: payload.mapping,
+            settings: payload.settings,
+        },
+    )
+    .await?;
     let (sender, _) = broadcast::channel(128);
     let job = Arc::new(Mutex::new(AnalysisJob {
+        owner: state.user.as_ref().context("Sign in required")?.id.clone(),
+        central: false,
+        publishing: false,
+        metadata: Default::default(),
+        imported_comments: Default::default(),
         status: JobStatus::Running,
-        message: "Analysis worker started.".to_owned(),
+        message: "Clustering queued.".to_owned(),
         started_at: Instant::now(),
         finished_at: None,
         progress_log: Vec::new(),
         result: None,
         review: None,
         view: Default::default(),
-        pending_review: None,
         error: None,
         events: sender.clone(),
     }));
@@ -433,17 +642,6 @@ async fn start_analysis_endpoint(
         .lock()
         .expect("job state poisoned")
         .insert(job_id.clone(), job.clone());
-
-    std::thread::spawn(move || {
-        let progress_job = job.clone();
-        let result = run_analysis_with_progress(
-            source,
-            payload.mapping,
-            payload.settings,
-            move |progress| record_progress(&progress_job, progress),
-        );
-        record_finished(&job, result);
-    });
 
     json_response(StatusCode::ACCEPTED, &StartAnalysisResponse { job_id })
 }
@@ -478,7 +676,7 @@ async fn restore_session_endpoint(
     review_api::restore(request, state).await
 }
 
-fn events_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody>> {
+fn events_endpoint(path: &str, state: WebState, cookies: String) -> Result<Response<BoxBody>> {
     let job_id = path
         .trim_start_matches("/api/jobs/")
         .trim_end_matches("/events")
@@ -493,41 +691,45 @@ fn events_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody>> {
     let status_kind = snapshot.status_kind().to_owned();
     let elapsed_ms = snapshot.elapsed_ms;
     let message = snapshot.message.clone();
-    let initial_events =
-        snapshot
-            .progress_log
-            .into_iter()
-            .chain(
-                snapshot
-                    .result_summary
-                    .clone()
-                    .map(|summary| ProgressEvent {
-                        kind: status_kind,
-                        elapsed_ms,
-                        message,
-                        progress: None,
-                        result_summary: Some(summary),
-                    }),
-            );
+    let initial_events = snapshot
+        .progress_log
+        .into_iter()
+        .chain(std::iter::once(ProgressEvent {
+            kind: status_kind,
+            elapsed_ms,
+            message,
+            progress: None,
+            result_summary: snapshot.result_summary,
+        }));
 
     let initial = stream::iter(initial_events.map(sse_frame));
-    let live = stream::unfold(receiver, |mut receiver| async move {
-        match receiver.recv().await {
-            Ok(event) => Some((sse_frame(event), receiver)),
-            Err(broadcast::error::RecvError::Lagged(_)) => Some((
-                sse_frame(ProgressEvent {
-                    kind: "status".to_owned(),
-                    elapsed_ms: 0,
-                    message: "Progress stream lagged; latest job state is still available."
-                        .to_owned(),
-                    progress: None,
-                    result_summary: None,
-                }),
-                receiver,
-            )),
-            Err(broadcast::error::RecvError::Closed) => None,
-        }
-    });
+    let live = stream::unfold(
+        (receiver, state, cookies),
+        |(mut receiver, state, cookies)| async move {
+            if state.inner.auth.session(&cookies).await.is_err() {
+                return None;
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await {
+                Ok(Ok(event)) => Some((sse_frame(event), (receiver, state, cookies))),
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => Some((
+                    sse_frame(ProgressEvent {
+                        kind: "status".to_owned(),
+                        elapsed_ms: 0,
+                        message: "Progress stream lagged; latest job state is still available."
+                            .to_owned(),
+                        progress: None,
+                        result_summary: None,
+                    }),
+                    (receiver, state, cookies),
+                )),
+                Ok(Err(broadcast::error::RecvError::Closed)) => None,
+                Err(_) => Some((
+                    Ok(Frame::data(Bytes::from_static(b": heartbeat\n\n"))),
+                    (receiver, state, cookies),
+                )),
+            }
+        },
+    );
 
     let body = BodyExt::boxed(StreamBody::new(initial.chain(live)));
     let mut response = Response::new(body);
@@ -1068,15 +1270,17 @@ fn record_progress(job: &Arc<Mutex<AnalysisJob>>, progress: ProgressUpdate) {
     let _ = job.events.send(event);
 }
 
-fn record_finished(job: &Arc<Mutex<AnalysisJob>>, result: Result<AnalysisRun>) {
-    let result = result.and_then(|run| {
-        let review = crate::session::ReviewData::new(&run)?;
-        Ok((run, review))
-    });
+fn record_finished(job: &Arc<Mutex<AnalysisJob>>, result: Result<crate::session::LoadedSession>) {
     let mut job = job.lock().expect("job state poisoned");
     job.finished_at = Some(Instant::now());
     match result {
-        Ok((run, review)) => {
+        Ok(loaded) => {
+            let crate::session::LoadedSession {
+                run,
+                review,
+                view,
+                metadata,
+            } = loaded;
             let summary = analysis_summary(&run);
             job.status = JobStatus::Finished;
             job.message = format!(
@@ -1084,6 +1288,8 @@ fn record_finished(job: &Arc<Mutex<AnalysisJob>>, result: Result<AnalysisRun>) {
                 summary.clusters, summary.ignored_rows
             );
             job.review = Some(review);
+            job.view = view;
+            job.metadata = metadata;
             job.result = Some(Arc::new(run));
             let _ = job.events.send(ProgressEvent {
                 kind: "finished".to_owned(),
@@ -1160,7 +1366,7 @@ fn elapsed_ms(job: &AnalysisJob) -> u128 {
 
 impl WebState {
     fn next_id(&self, prefix: &str) -> String {
-        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = crate::storage::id();
         format!("{prefix}-{id}")
     }
 }
@@ -1169,14 +1375,6 @@ fn parse_query(query: Option<&str>) -> HashMap<String, String> {
     form_urlencoded::parse(query.unwrap_or_default().as_bytes())
         .into_owned()
         .collect()
-}
-
-fn upload_path(source_id: &str, file_name: &str) -> PathBuf {
-    let extension = Path::new(file_name)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or("dat");
-    std::env::temp_dir().join(format!("incident-clustering-{source_id}.{extension}"))
 }
 
 fn is_excel(path: &Path) -> bool {

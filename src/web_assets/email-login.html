@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in — Incident analysis</title>
+<link rel="stylesheet" href="/app.css"></head>
+<body class="login-page"><header class="topbar"><h1>Incident Clustering Analyzer</h1></header>
+<main class="login-main"><section class="login-panel" aria-labelledby="loginTitle"><h2 id="loginTitle">Sign in</h2><p class="muted">Enter your work email to open your analyses.</p><form id="login"><label class="field" for="email">Email<input id="email" name="email" type="email" autocomplete="email" required maxlength="254" autofocus></label><div class="toolbar"><button class="primary">Sign in</button></div></form><p id="error" class="workflow-error" role="alert"></p></section></main>
+<script>
+document.getElementById('login').addEventListener('submit',async event=>{
+  event.preventDefault();const button=event.target.querySelector('button'),error=document.getElementById('error');button.disabled=true;error.textContent='';
+  try{const response=await fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'same-origin'},body:JSON.stringify({email:document.getElementById('email').value})});
+    if(!response.ok){error.textContent=response.status===403?'This email is not on the access list. Contact the application operator.':'Sign-in is unavailable. Please try again or contact the application operator.';return;}
+    location.assign('/');
+  }catch{error.textContent='Unable to connect. Please try again.';}finally{button.disabled=false;}
+});
+</script></body></html>
