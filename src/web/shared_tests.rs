@@ -281,6 +281,8 @@ async fn authenticated_import_central_save_two_user_review_and_export() -> Resul
         .json()
         .await?;
     assert_eq!(edited["snapshot"]["audit"][0]["actor"]["name"], "Bob");
+    assert_eq!(edited["snapshot"]["analysis"]["owner"]["id"], a.user.id);
+    assert_eq!(edited["snapshot"]["analysis"]["owner"]["name"], "Alice");
     let stale=post(&client,&url,&alice,&a.csrf,json!({"commandId":id(),"target":"1","expected":0,"action":{"type":"rename","label":"Stale"}})).await?;
     assert_eq!(stale.status(), 409);
     let stale: Value = stale.json().await?;
@@ -299,7 +301,7 @@ async fn authenticated_import_central_save_two_user_review_and_export() -> Resul
     .error_for_status()?
     .bytes()
     .await?;
-    assert_eq!(export[8], 3);
+    assert_eq!(export[8], 4);
     let decoded = session::decode_session(&export)?;
     assert_eq!(decoded.metadata.audit[0]["actor"]["name"], "Bob");
     let pivot = post(
@@ -376,6 +378,11 @@ async fn run_browser_fixture(large: bool) -> Result<()> {
                 metadata: &Default::default(),
             },
         )
+        .await?;
+    state
+        .inner
+        .store
+        .backfill_dashboard(&state.inner.artifacts)
         .await?;
     let output = tokio::process::Command::new("node")
         .arg(if large {

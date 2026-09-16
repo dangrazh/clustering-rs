@@ -1,3 +1,4 @@
+import { reviewerRows, reviewerLabel, bindReviewerFilter } from "./reviewers.js";
 import { captureView, restoreView } from "./view-state.js";
 import { bindWorkflow, openWorkflow, renderWorkflow, renderSaveStatus, applyReviewResponse, effectiveWorkflow, selectionKey, statusLabels, stateMatches, workflowRows, displayLabel } from "./workflow.js";
 import { exportClusterViewExcel, exportExcel, exportPivotExcel, fetchPivot, fetchResult, restoreSession, fetchReview, saveSession } from "./api.js";
@@ -6,6 +7,7 @@ import { hideOverlay, setStatus, showBusy, showError, showStep, statsHtml } from
 import { clusterId, clusterKey, escapeHtml, sameSelection } from "./utils.js";
 
 export function bindResultsEvents() {
+  bindReviewerFilter(() => renderResults());
   bindWorkflow(() => renderResults());
   async function saving(title, action) {
     showBusy(title, "Preparing your download. Large sessions may take a while.");
@@ -98,14 +100,19 @@ export function bindResultsEvents() {
   window.addEventListener("resize", () => applyResultsPaneWidth());
 }
 
+let loadGeneration = 0, navigationEpoch = 0;
+if(typeof window!=="undefined")window.addEventListener("pane-change",()=>navigationEpoch++);
 export async function loadResult(jobId) {
+  const generation = ++loadGeneration, epoch = navigationEpoch;
   state.loadingAnalysis=true;
   try {
   if (jobId.startsWith("job-")) state.analysisId = null;
   const [run, metadata] = await Promise.all([fetchResult(jobId), fetchReview(jobId)]);
+  if(generation !== loadGeneration || epoch !== navigationEpoch) return false;
   initializeResult(run, jobId, metadata);
   renderResults(); showStep("results");
-  } finally {state.loadingAnalysis=false;}
+  return true;
+  } finally {if(generation === loadGeneration) state.loadingAnalysis=false;}
 }
 export async function loadSavedSession(file) {
   const restored = await restoreSession(file);
@@ -122,6 +129,7 @@ function initializeResult(run, jobId, metadata) {
   state.selection = { type: "all" };
   state.expandedClusters = new Set();
   state.workflowStates = [];
+  state.reviewerFilter = {};
   applyReviewResponse(metadata);
   state.savedReviewRevision = state.review.annotations.revision;
   state.detailPage = 1;
@@ -161,6 +169,7 @@ export function renderResults(preserveEditor = false) {
     ["Ignored", run.ignored_rows.length],
     ["Unclustered", run.unclustered_row_indices.length],
   ]);
+  window.dispatchEvent(new Event("reviewer-render"));
   renderClusterList();
   renderDetailRows();
   if (!preserveEditor) renderWorkflow(() => renderResults());
@@ -204,6 +213,7 @@ function renderClusterList() {
       "cluster-label"
     );
     row.appendChild(workflowBadge(clusterSelection));
+    row.appendChild(reviewerLabel(cluster.id));
     if (!stateMatches(state.review, String(cluster.id), state.workflowStates)) row.classList.add("context-parent");
     list.appendChild(row);
 
@@ -222,21 +232,30 @@ function renderClusterList() {
           "theme"
         );
         themeRow.appendChild(workflowBadge(themeSelection));
+        themeRow.appendChild(reviewerLabel(cluster.id));
         list.appendChild(themeRow);
       });
     }
   });
+  if (!list.querySelector(".tree-row")) {
+    const message = document.createElement("p");
+    message.className = "dashboard-empty";
+    message.textContent = "No clusters match the current filters.";
+    list.append(message);
+  }
 }
 
 export function treeVisibleRows() {
   const run = state.analysis;
   const hasColumnFilters = state.detailColumnFilters.some(isDetailFilterActive);
   const hasDrilldown = Array.isArray(state.detailDrilldownRowIndices);
-  if (!run || (!hasColumnFilters && !hasDrilldown && !state.workflowStates.length)) return null;
+  if (!run || (!hasColumnFilters && !hasDrilldown && !state.workflowStates.length && !state.reviewerFilter?.selected)) return null;
 
   let rowIndices = run.processed_incidents.map((record) => record.source_row_index);
   rowIndices = applyDetailFilters(rowIndices, run.source.rows);
   rowIndices = applyDetailDrilldown(rowIndices);
+  const reviewers = reviewerRows(state);
+  if (reviewers) rowIndices = rowIndices.filter(row => reviewers.has(row));
   const workflow = workflowRows(run, state.review, state.workflowStates);
   return new Set(workflow ? rowIndices.filter(row => workflow.has(row)) : rowIndices);
 }
@@ -321,6 +340,8 @@ function visibleDetailRowIndices() {
   let rowIndices = detailRowIndices();
   rowIndices = applyDetailFilters(rowIndices, run.source.rows);
   rowIndices = applyDetailDrilldown(rowIndices);
+  const reviewers = reviewerRows(state);
+  if (reviewers) rowIndices = rowIndices.filter(row => reviewers.has(row));
   const workflow = workflowRows(run, state.review, state.workflowStates);
   if (workflow) rowIndices = rowIndices.filter(row => workflow.has(row));
   return applyDetailSort(rowIndices, run.source.rows);

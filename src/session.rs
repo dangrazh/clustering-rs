@@ -19,6 +19,20 @@ pub const COMPRESSION_LEVEL: i32 = 6;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+struct LegacyViewState {
+    pub version: u16,
+    pub selection: Option<Selection>,
+    pub expanded_clusters: Vec<String>,
+    pub detail_column_filters: Vec<ColumnFilter>,
+    pub detail_sort: Option<Sort>,
+    pub pivot_rows: Vec<u64>,
+    pub pivot_columns: Vec<u64>,
+    pub detail_drilldown_row_indices: Option<Vec<u64>>,
+    pub detail_drilldown_label: String,
+    pub workflow_states: Vec<ReviewStatus>,
+}
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ViewState {
     pub version: u16,
     pub selection: Option<Selection>,
@@ -30,6 +44,7 @@ pub struct ViewState {
     pub detail_drilldown_row_indices: Option<Vec<u64>>,
     pub detail_drilldown_label: String,
     pub workflow_states: Vec<ReviewStatus>,
+    pub reviewer_filter: ReviewerFilter,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Selection {
@@ -49,9 +64,62 @@ pub struct Sort {
     pub column: u64,
     pub direction: String,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ReviewerFilter {
+    pub selected: bool,
+    pub users: Vec<String>,
+    pub me: bool,
+    pub unassigned: bool,
+    pub unconfirmed: bool,
+}
+impl From<LegacyViewState> for ViewState {
+    fn from(v: LegacyViewState) -> Self {
+        Self {
+            version: v.version,
+            selection: v.selection,
+            expanded_clusters: v.expanded_clusters,
+            detail_column_filters: v.detail_column_filters,
+            detail_sort: v.detail_sort,
+            pivot_rows: v.pivot_rows,
+            pivot_columns: v.pivot_columns,
+            detail_drilldown_row_indices: v.detail_drilldown_row_indices,
+            detail_drilldown_label: v.detail_drilldown_label,
+            workflow_states: v.workflow_states,
+            reviewer_filter: ReviewerFilter::default(),
+        }
+    }
+}
+impl From<&ViewState> for LegacyViewState {
+    fn from(v: &ViewState) -> Self {
+        Self {
+            version: v.version,
+            selection: v.selection.clone(),
+            expanded_clusters: v.expanded_clusters.clone(),
+            detail_column_filters: v.detail_column_filters.clone(),
+            detail_sort: v.detail_sort.clone(),
+            pivot_rows: v.pivot_rows.clone(),
+            pivot_columns: v.pivot_columns.clone(),
+            detail_drilldown_row_indices: v.detail_drilldown_row_indices.clone(),
+            detail_drilldown_label: v.detail_drilldown_label.clone(),
+            workflow_states: v.workflow_states.clone(),
+        }
+    }
+}
+#[derive(Serialize, Deserialize)]
+struct SessionV4<'a> {
+    session: SessionV3<'a>,
+    filter: ReviewerFilter,
+}
+
 impl ViewState {
     pub fn sanitize(&mut self, run: &AnalysisRun) {
-        self.version = 1;
+        self.version = 2;
+        self.reviewer_filter.users.retain(|id| id.len() <= 200);
+        self.reviewer_filter.users.sort();
+        self.reviewer_filter.users.dedup();
+        self.reviewer_filter.users.truncate(1000);
         let columns = run.source.headers.len() as u64;
         self.pivot_rows.retain(|c| *c < columns);
         self.pivot_columns
@@ -137,7 +205,7 @@ struct SessionV3<'a> {
 struct SessionWire<'a> {
     run: RunWire<'a>,
     review: Cow<'a, ReviewData>,
-    view: Cow<'a, ViewState>,
+    view: Cow<'a, LegacyViewState>,
 }
 // Preserve binary v1 files created before editable labels were introduced.
 #[derive(Serialize, Deserialize)]
@@ -155,7 +223,7 @@ struct AnnotationsV1 {
 struct SessionV1<'a> {
     run: RunWire<'a>,
     review: ReviewV1,
-    view: ViewState,
+    view: LegacyViewState,
 }
 impl From<ReviewV1> for ReviewData {
     fn from(old: ReviewV1) -> Self {
@@ -455,7 +523,7 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8], kind: u8) -> Result<T> {
     );
     ensure!(bytes.len() <= MAX_FILE_BYTES, "File is too large.");
     ensure!(
-        matches!(u16::from_le_bytes([bytes[8], bytes[9]]), 1..=3) && bytes[11] == 1,
+        matches!(u16::from_le_bytes([bytes[8], bytes[9]]), 1..=4) && bytes[11] == 1,
         "Unsupported session version or codec."
     );
     ensure!(
@@ -496,15 +564,21 @@ pub fn encode_session_level(
     level: i32,
 ) -> Result<Vec<u8>> {
     validate_text_fields(run)?;
-    encode(
-        1,
-        &SessionWire {
-            run: RunWire::from_run(run),
-            review: Cow::Borrowed(review),
-            view: Cow::Borrowed(view),
+    let wire = SessionV4 {
+        session: SessionV3 {
+            session: SessionWire {
+                run: RunWire::from_run(run),
+                review: Cow::Borrowed(review),
+                view: Cow::Owned(view.into()),
+            },
+            reviewers: Default::default(),
+            audit: vec![],
         },
-        level,
-    )
+        filter: view.reviewer_filter.clone(),
+    };
+    let mut bytes = encode(1, &wire, level)?;
+    bytes[8..10].copy_from_slice(&4u16.to_le_bytes());
+    Ok(bytes)
 }
 fn validate_text_fields(run: &AnalysisRun) -> Result<()> {
     // Reject a save that could not be read back using the bounded text scratch buffer.
@@ -529,7 +603,23 @@ fn validate_text_fields(run: &AnalysisRun) -> Result<()> {
 }
 pub fn decode_session(bytes: &[u8]) -> Result<LoadedSession> {
     let mut metadata = crate::storage::PortableMeta::default();
-    let (run, review, mut view) = if bytes.get(8..10) == Some(&[3, 0]) {
+    let (run, review, mut view): (_, _, ViewState) = if bytes.get(8..10) == Some(&[4, 0]) {
+        let wire: SessionV4<'_> = decode(bytes, 1)?;
+        metadata.reviewers = wire.session.reviewers;
+        metadata.audit = wire
+            .session
+            .audit
+            .iter()
+            .map(|v| serde_json::from_str(v))
+            .collect::<std::result::Result<_, _>>()?;
+        let mut view: ViewState = wire.session.session.view.into_owned().into();
+        view.reviewer_filter = wire.filter;
+        (
+            wire.session.session.run.into_run()?,
+            wire.session.session.review.into_owned(),
+            view,
+        )
+    } else if bytes.get(8..10) == Some(&[3, 0]) {
         let wire: SessionV3<'_> = decode(bytes, 1)?;
         metadata.reviewers = wire.reviewers;
         metadata.audit = wire
@@ -540,21 +630,21 @@ pub fn decode_session(bytes: &[u8]) -> Result<LoadedSession> {
         (
             wire.session.run.into_run()?,
             wire.session.review.into_owned(),
-            wire.session.view.into_owned(),
+            wire.session.view.into_owned().into(),
         )
     } else if bytes.get(8..10) == Some(&[1, 0]) {
         let wire: SessionV1<'_> = decode(bytes, 1)?;
         (
             wire.run.into_run()?,
             ReviewData::from(wire.review),
-            wire.view,
+            wire.view.into(),
         )
     } else {
         let wire: SessionWire<'_> = decode(bytes, 1)?;
         (
             wire.run.into_run()?,
             wire.review.into_owned(),
-            wire.view.into_owned(),
+            wire.view.into_owned().into(),
         )
     };
     validate_run(&run)?;
@@ -594,13 +684,20 @@ pub fn encode_portable(
         session: SessionWire {
             run: RunWire::from_run(run),
             review: Cow::Borrowed(review),
-            view: Cow::Borrowed(view),
+            view: Cow::Owned(view.into()),
         },
         reviewers: metadata.reviewers.clone(),
         audit,
     };
-    let mut bytes = encode(1, &wire, COMPRESSION_LEVEL)?;
-    bytes[8..10].copy_from_slice(&3u16.to_le_bytes());
+    let mut bytes = encode(
+        1,
+        &SessionV4 {
+            session: wire,
+            filter: view.reviewer_filter.clone(),
+        },
+        COMPRESSION_LEVEL,
+    )?;
+    bytes[8..10].copy_from_slice(&4u16.to_le_bytes());
     Ok(bytes)
 }
 pub fn encode_review(review: &ReviewData) -> Result<Vec<u8>> {
@@ -748,6 +845,42 @@ mod compatibility_tests {
         let loaded = decode_session(&session).unwrap();
         assert_eq!(loaded.run, run);
         assert!(loaded.review.annotations.labels.is_empty());
+        let legacy_view = LegacyViewState::default();
+        let wire = SessionWire {
+            run: RunWire::from_run(&run),
+            review: Cow::Borrowed(&current),
+            view: Cow::Borrowed(&legacy_view),
+        };
+        let v2 = encode(1, &wire, COMPRESSION_LEVEL).unwrap();
+        assert!(!decode_session(&v2).unwrap().view.reviewer_filter.selected);
+        let mut v3 = encode(
+            1,
+            &SessionV3 {
+                session: wire,
+                reviewers: Default::default(),
+                audit: vec![],
+            },
+            COMPRESSION_LEVEL,
+        )
+        .unwrap();
+        v3[8..10].copy_from_slice(&3u16.to_le_bytes());
+        assert!(!decode_session(&v3).unwrap().view.reviewer_filter.selected);
+        let view = ViewState {
+            reviewer_filter: ReviewerFilter {
+                selected: true,
+                me: true,
+                unconfirmed: true,
+                users: vec!["bob".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let v4 = encode_portable(&run, &current, &view, &Default::default()).unwrap();
+        assert_eq!(
+            decode_session(&v4).unwrap().view.reviewer_filter,
+            view.reviewer_filter
+        );
+
         let mut review = encode(2, &legacy(), COMPRESSION_LEVEL).unwrap();
         review[8..10].copy_from_slice(&1u16.to_le_bytes());
         assert_eq!(

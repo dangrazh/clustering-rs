@@ -149,7 +149,8 @@ pub(super) fn handles(path: &str) -> bool {
     matches!(
         path,
         "/api/me" | "/api/users" | "/api/analyses" | "/api/changes" | "/api/jobs"
-    ) || path.starts_with("/api/analyses/")
+    ) || path.starts_with("/api/dashboard/")
+        || path.starts_with("/api/analyses/")
         || path.starts_with("/api/jobs/")
             && (path.ends_with("/save-central")
                 || path.ends_with("/cancel")
@@ -198,6 +199,28 @@ pub(super) async fn route(
     let method = request.method().clone();
     let user = state.user.as_ref().context("Sign in required")?.clone();
     let store = &state.inner.store;
+    if path.starts_with("/api/dashboard/") {
+        if path == "/api/dashboard/preferences" {
+            if method == Method::GET {
+                return json_response(StatusCode::OK, &store.dashboard_preferences(&user).await?);
+            }
+            if method == Method::POST {
+                let value: serde_json::Value = body(request).await?;
+                store.save_dashboard_preferences(&user, &value).await?;
+                return json_response(StatusCode::OK, &json!({"saved":true}));
+            }
+        }
+        if method == Method::GET && path == "/api/dashboard/data" {
+            let query = parse_query(uri.query());
+            let offset = query
+                .get("offset")
+                .map(|v| v.parse::<i64>())
+                .transpose()?
+                .unwrap_or(0);
+            return json_response(StatusCode::OK, &store.dashboard_page(&user, offset).await?);
+        }
+        anyhow::bail!("Unknown dashboard operation");
+    }
     match (method.clone(), path) {
         (Method::GET, "/api/me") => {
             let session = state
@@ -299,7 +322,7 @@ pub(super) async fn route(
         );
         let payload: InitialSave = body(request).await?;
         let job = review_api::find_job(&state, jid)?;
-        let (run, review, meta) = {
+        let (run, review, mut meta) = {
             let mut locked = job.lock().unwrap();
             anyhow::ensure!(!locked.publishing, "Initial save already in progress");
             let run = locked
@@ -320,6 +343,7 @@ pub(super) async fn route(
             let result = async {
                 let mut view = payload.view;
                 view.sanitize(&run);
+                meta.summaries = crate::storage::Store::entity_summaries(&run);
                 let artifact = state
                     .inner
                     .artifacts

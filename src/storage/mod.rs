@@ -17,6 +17,7 @@ use tokio::sync::{RwLock, Semaphore};
 use turso::{params, Connection};
 use unicode_normalization::UnicodeNormalization;
 
+mod dashboard;
 #[cfg(test)]
 mod tests;
 
@@ -54,6 +55,8 @@ impl User {
 pub struct AnalysisInfo {
     pub id: String,
     pub name: String,
+    /// The initial saving user, persisted in analyses.creator and never reassigned by edits.
+    pub owner: User,
     pub artifact: String,
     pub fingerprint: String,
     pub archived: bool,
@@ -76,6 +79,8 @@ pub struct PortableMeta {
     pub read_only_comments: std::collections::BTreeSet<String>,
     #[serde(skip)]
     pub source_job: Option<String>,
+    #[serde(skip)]
+    pub summaries: Vec<Value>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -197,9 +202,13 @@ impl Store {
             execute(&c, "COMMIT").await?;
         }
         ensure!(
-            scalar(&c, "SELECT version FROM schema_version").await? == 1,
+            matches!(
+                scalar(&c, "SELECT version FROM schema_version").await?,
+                1 | 2
+            ),
             "Unsupported database schema version"
         );
+        dashboard::migrate(&c).await?;
         Ok(s)
     }
     pub async fn connect(&self) -> Result<Connection> {
@@ -318,11 +327,12 @@ impl Store {
                 c.execute("UPDATE jobs SET metadata=?,expires=NULL WHERE id=?",params![metadata.to_string(),jid.clone()]).await?;
             }
             c.execute("INSERT INTO analyses(id,name,normalized_name,artifact,fingerprint,creator,created) VALUES(?,?,?,?,?,?,?)",params![aid.clone(),name,normalized,artifact,review.fingerprint.clone(),user.id.clone(),now()]).await?;
+            dashboard::insert_summaries(&c, &aid, &meta.summaries).await?;
             for (key,entry) in &review.annotations.entries {
                 c.execute("INSERT INTO entities(analysis,entity,workflow,label) VALUES(?,?,?,?)",params![aid.clone(),key.clone(),serde_json::to_string(&entry.workflow)?,review.annotations.labels.get(key).cloned()]).await?;
                 if !key.contains(':'){
                     let reviewer=meta.reviewers.get(key).cloned().unwrap_or_default();
-                    c.execute("INSERT INTO reviewers(analysis,entity,value) VALUES(?,?,?)",params![aid.clone(),key.clone(),serde_json::to_string(&reviewer)?]).await?;
+                    c.execute("INSERT INTO reviewers(analysis,entity,value,user_id) VALUES(?,?,?,?)",params![aid.clone(),key.clone(),serde_json::to_string(&reviewer)?,if reviewer.unconfirmed {None} else {reviewer.user_id.clone()}]).await?;
                 }
                 for comment in &entry.comments{let read_only=meta.read_only_comments.contains(&comment.id);c.execute("INSERT INTO comments(analysis,entity,id,owner,imported,value) VALUES(?,?,?,?,?,?)",params![aid.clone(),key.clone(),comment.id.clone(),if read_only{None}else{Some(user.id.clone())},i64::from(read_only),serde_json::to_string(comment)?]).await?;}
                 for event in &entry.history{c.execute("INSERT INTO history VALUES(?,?,?,?)",params![aid.clone(),key.clone(),event.id.clone(),serde_json::to_string(event)?]).await?;}
@@ -608,8 +618,8 @@ impl Store {
                     Reviewer::default()
                 };
                 c.execute(
-                    "UPDATE reviewers SET value=?,version=version+1 WHERE analysis=? AND entity=?",
-                    params![serde_json::to_string(&assigned)?, aid, cmd.target.clone()],
+                    "UPDATE reviewers SET value=?,user_id=?,version=version+1 WHERE analysis=? AND entity=?",
+                    params![serde_json::to_string(&assigned)?, assigned.user_id.clone(), aid, cmd.target.clone()],
                 )
                 .await?;
                 audit(
@@ -800,7 +810,7 @@ impl Store {
 async fn info(c: &Connection, aid: &str) -> Result<AnalysisInfo> {
     let r = c
         .query(
-            "SELECT id,name,artifact,fingerprint,archived,version,created FROM analyses WHERE id=?",
+            "SELECT a.id,a.name,a.artifact,a.fingerprint,a.archived,a.version,a.created,u.id,u.name,u.email FROM analyses a JOIN users u ON u.id=a.creator WHERE a.id=?",
             [aid],
         )
         .await?
@@ -815,6 +825,11 @@ async fn info(c: &Connection, aid: &str) -> Result<AnalysisInfo> {
         archived: r.get::<i64>(4)? != 0,
         version: r.get::<i64>(5)? as u64,
         created: r.get(6)?,
+        owner: User {
+            id: r.get(7)?,
+            name: r.get(8)?,
+            email: r.get(9)?,
+        },
     })
 }
 fn expect(actual: u64, expected: u64) -> Result<()> {

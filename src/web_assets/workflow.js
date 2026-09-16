@@ -44,6 +44,7 @@ export function applyReviewResponse(payload) {
   state.review = payload.review;
   state.allowedActions = payload.allowedActions || {};
   state.shared = payload.analysis ? payload : null;
+  state.reviewers = payload.reviewers || {};
   state.commentAccess=payload.commentAccess;
 }
 export function renderSaveStatus() {

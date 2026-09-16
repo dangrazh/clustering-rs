@@ -204,6 +204,9 @@ mod tests {
         let user = store
             .user("fixture:operator", "Operator", "operator@example.invalid")
             .await?;
+        store
+            .save_dashboard_preferences(&user, &serde_json::json!({"mine":{"search":"Restore"}}))
+            .await?;
         let artifacts = crate::artifacts::Artifacts::new(root.clone(), 64 * 1024 * 1024);
         let run = std::sync::Arc::new(crate::fixtures::run(20));
         let review = crate::session::ReviewData::new(&run)?;
@@ -263,6 +266,10 @@ mod tests {
         let restored = dir.path().join("restored");
         restore(&copy, &restored)?;
         let store = crate::storage::Store::open(&restored, 4).await?;
+        assert_eq!(
+            store.dashboard_preferences(&user).await?["mine"]["search"],
+            "Restore"
+        );
         assert_eq!(store.users().await?[0].id, user.id);
         assert_eq!(store.review(&aid, &user).await?, expected);
         let restored_artifacts =

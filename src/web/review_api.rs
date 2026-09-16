@@ -311,6 +311,7 @@ fn review_response(
     review: &ReviewData,
     view: &ViewState,
     read_only: &HashSet<String>,
+    reviewers: &BTreeMap<String, crate::storage::Reviewer>,
 ) -> Result<Response<BoxBody>> {
     let mut actions = BTreeMap::new();
     for key in review.annotations.entries.keys() {
@@ -335,7 +336,7 @@ fn review_response(
         .collect();
     json_response(
         StatusCode::OK,
-        &serde_json::json!({"review":review,"view":view,"allowedActions":actions,"commentAccess":comment_access}),
+        &serde_json::json!({"review":review,"view":view,"allowedActions":actions,"commentAccess":comment_access,"reviewers":reviewers}),
     )
 }
 fn binary(bytes: Vec<u8>, name: &str) -> Result<Response<BoxBody>> {
@@ -427,7 +428,13 @@ pub(super) async fn route(
     let job = find_job(&state, id)?;
     if request.method() == Method::GET && operation == "review" {
         let (_, review, view) = snapshot(&job)?;
-        return review_response(&review, &view, &job.lock().unwrap().imported_comments);
+        let locked = job.lock().unwrap();
+        return review_response(
+            &review,
+            &view,
+            &locked.imported_comments,
+            &locked.metadata.reviewers,
+        );
     }
     anyhow::ensure!(
         request.method() == Method::POST,
@@ -463,6 +470,7 @@ pub(super) async fn route(
                 locked.review.as_ref().unwrap(),
                 &locked.view,
                 &locked.imported_comments,
+                &locked.metadata.reviewers,
             )
         }
         "session/save" => {

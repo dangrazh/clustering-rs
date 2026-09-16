@@ -203,6 +203,7 @@ pub async fn serve(address: SocketAddr, config: AppConfig) -> Result<()> {
     crate::jobs::startup_cleanup(&store).await?;
     let auth = crate::auth::Auth::from_env(store.clone()).await?;
     let artifacts = crate::artifacts::Artifacts::new(store.root.clone(), runtime.cache_bytes);
+    store.backfill_dashboard(&artifacts).await?;
     let listener = TcpListener::bind(address).await?;
     let state = WebState {
         request_job: None,
@@ -410,6 +411,21 @@ async fn handle(request: Request<Incoming>, mut state: WebState) -> Result<Respo
             StatusCode::OK,
             "text/javascript; charset=utf-8",
             UTILS_JS,
+        )),
+        (Method::GET, "/jobs-view.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            include_str!("web_assets/jobs-view.js"),
+        )),
+        (Method::GET, "/dashboard.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            include_str!("web_assets/dashboard.js"),
+        )),
+        (Method::GET, "/reviewers.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            include_str!("web_assets/reviewers.js"),
         )),
         (Method::GET, "/workflow.js") => Ok(text_response(
             StatusCode::OK,

@@ -34,6 +34,7 @@ export function bindNavigation() {
 }
 
 export function showStep(step) {
+  window.dispatchEvent(new CustomEvent("pane-change", {detail:step}));
   document.querySelectorAll(".screen").forEach((screen) => {
     screen.classList.toggle("active", screen.id === step);
   });

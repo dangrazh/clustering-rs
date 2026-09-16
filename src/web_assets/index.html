@@ -13,7 +13,8 @@
         <p id="sourceStatus">No source loaded</p>
       </div>
       <nav class="steps" aria-label="Workflow">
-        <button data-step="source" class="active">1 Source</button>
+        <button data-step="dashboard" class="active">Dashboard</button>
+        <button data-step="source">1 Source</button>
         <button data-step="mapping" disabled>2 Mapping</button>
         <button data-step="analysis" disabled>3 Analysis</button>
         <button data-step="results" disabled>4 Results</button>
@@ -22,7 +23,8 @@
     </header>
 
     <main>
-      <section id="source" class="screen active">
+      <section id="dashboard" class="screen active"><div class="section-head"><h2>Dashboard</h2><span id="dashboardSave" class="job-metadata"></span></div><div id="dashboardGrid" class="dashboard-grid"></div></section>
+      <section id="source" class="screen">
         <div class="section-head">
           <h2>Source file</h2>
           <div class="toolbar">
@@ -164,7 +166,7 @@
       </section>
     </main>
 
-    <footer id="statusLine">Select a CSV or Excel incident export.</footer>
+    <footer id="statusLine">Open your work from Dashboard, or choose Source to start a new analysis.</footer>
     <div id="statusOverlay" class="status-overlay hidden" role="alert" aria-live="assertive">
       <div class="status-overlay-panel">
         <div id="statusOverlayTitle" class="status-overlay-title">Working</div>

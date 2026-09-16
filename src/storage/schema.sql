@@ -2,6 +2,7 @@ CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
 INSERT INTO schema_version VALUES(1);
 CREATE TABLE users(id TEXT PRIMARY KEY, external_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL, email TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE sessions(token TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), csrf TEXT NOT NULL, expires INTEGER NOT NULL);
+-- creator is the immutable owner: the authenticated user performing the initial central save.
 CREATE TABLE analyses(id TEXT PRIMARY KEY, name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE, artifact TEXT NOT NULL, fingerprint TEXT NOT NULL, creator TEXT NOT NULL REFERENCES users(id), archived INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL);
 CREATE TABLE entities(analysis TEXT NOT NULL REFERENCES analyses(id), entity TEXT NOT NULL, workflow TEXT NOT NULL, workflow_version INTEGER NOT NULL DEFAULT 0, label TEXT, label_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(analysis,entity));
 CREATE TABLE reviewers(analysis TEXT NOT NULL REFERENCES analyses(id), entity TEXT NOT NULL, value TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(analysis,entity));

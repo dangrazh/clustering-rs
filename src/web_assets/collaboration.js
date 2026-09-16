@@ -1,3 +1,5 @@
+import { jobSummaryText } from "./jobs-view.js";
+import { initializeDashboard } from "./dashboard.js";
 import { state } from "./state.js";
 import { request,fetchReview } from "./api.js";
 import { loadResult,renderResults } from "./results.js";
@@ -62,6 +64,7 @@ export async function initializeCollaboration(){
     bar.replaceChildren();const link=document.createElement("a");link.href="/auth/login";link.textContent="Sign in";link.className="button primary";bar.append(link);
     document.querySelector("main").inert=true;return;
   }
+  initializeDashboard(openAnalysis).catch(error=>{document.getElementById("dashboardSave").textContent=`Dashboard unavailable: ${error.message}. Reload to retry.`;});
   const events=new EventSource("/api/changes");let refreshing=false,refreshAgain=false;
   async function refreshShared(){
     if(refreshing){refreshAgain=true;return;}refreshing=true;
@@ -74,8 +77,8 @@ export async function initializeCollaboration(){
       }while(refreshAgain);
     }finally{refreshing=false;}
   }
-  events.onmessage=event=>{const data=JSON.parse(event.data);if(data.analysisId===state.analysisId)refreshShared().catch(()=>{});if(dialog.open&&["catalog","renameAnalysis","archive","restore"].includes(data.change.kind))refresh().catch(report);};
-  events.onopen=()=>refreshShared().catch(()=>{});
+  events.onmessage=event=>{window.dispatchEvent(new Event("dashboard-refresh"));const data=JSON.parse(event.data);if(data.analysisId===state.analysisId)refreshShared().catch(()=>{});if(dialog.open&&["catalog","renameAnalysis","archive","restore"].includes(data.change.kind))refresh().catch(report);};
+  events.onopen=()=>{window.dispatchEvent(new Event("dashboard-refresh"));refreshShared().catch(()=>{});};
   window.addEventListener("shared-save-state",renderSaveStatus);
   const presence=document.createElement("span");presence.id="analysisPresence";bar.append(presence);
   const jobsButton=document.createElement("button");jobsButton.textContent="My jobs";bar.append(jobsButton);
@@ -85,10 +88,8 @@ export async function initializeCollaboration(){
     for(const job of await json("/api/jobs")){
       const row=document.createElement("p");row.className="job-row";const description=document.createElement("span");description.className="job-description";row.append(description);description.textContent=`${new Date(job.created).toLocaleString()} — ${job.state}${job.error?`: ${job.error}`:""} `;
       if(job.expires)description.append(`Available until ${new Date(job.expires*1000).toLocaleString()}. `);
-      const summary=job.metadata?.summary||{},details=document.createElement("span");details.className="job-metadata";
-      const count=value=>Number.isInteger(value)?value.toLocaleString():"Not recorded";
-      const rows=Number.isInteger(summary.processedRows)?`Rows processed: ${count(summary.processedRows)} of ${count(summary.sourceRows)}`:`Source rows: ${count(summary.sourceRows)}`;
-      details.textContent=`Source: ${summary.sourceFileName||"Not recorded"} · ${rows} · Columns: ${count(summary.columnCount)}`;
+      const details=document.createElement("span");details.className="job-metadata";
+      details.textContent=jobSummaryText(job);
       description.append(details);
       const open=document.createElement("button");open.textContent=job.state==="finished"?"Open result":"View progress";row.append(open);
       open.disabled=["failed","cancelled"].includes(job.state);
@@ -123,4 +124,10 @@ export async function initializeCollaboration(){
     catch{status.textContent="View not saved — retrying";}finally{viewBusy=false;}
   },750);
 }
-async function openAnalysis(aid){state.analysisId=aid;state.jobId=aid;state.saveStatus="Saved";await loadResult(aid);previousView=JSON.stringify([aid,captureView(state)]);}
+let openGeneration=0;
+export async function openAnalysis(aid){
+  const generation=++openGeneration, previous={analysisId:state.analysisId,jobId:state.jobId};
+  state.analysisId=aid;state.jobId=aid;state.saveStatus="Saved";
+  try{const loaded=await loadResult(aid);if(loaded===false){if(generation===openGeneration&&state.jobId===aid)Object.assign(state,previous);return false;}if(generation===openGeneration)previousView=JSON.stringify([aid,captureView(state)]);return true;}
+  catch(error){if(generation===openGeneration)Object.assign(state,previous);throw error;}
+}

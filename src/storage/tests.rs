@@ -258,6 +258,7 @@ async fn archive_and_parent_versions_protect_shared_work() -> Result<()> {
 #[tokio::test]
 async fn restart_retains_records_and_personal_views() -> Result<()> {
     let (dir, s, alice, bob, aid) = fixture().await?;
+    assert_eq!(s.analysis(&aid).await?.owner.id, alice.id);
     assert!(Store::open(dir.path(), 4).await.is_err());
     let view = ViewState {
         detail_drilldown_label: "Alice's view".into(),
@@ -277,6 +278,33 @@ async fn restart_retains_records_and_personal_views() -> Result<()> {
     reopened.publish().await?;
     assert_eq!(reopened.events(0).await?.len(), 1);
     assert_eq!(reopened.list(" SHARED ", false).await?.len(), 1);
+    assert_eq!(
+        reopened.list(" SHARED ", false).await?[0].owner.id,
+        alice.id
+    );
+    for (version, action) in [
+        json!({"type":"renameAnalysis","name":"Renamed by Bob"}),
+        json!({"type":"archive"}),
+        json!({"type":"restore"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        reopened
+            .command(
+                aid.clone(),
+                bob.clone(),
+                command("", action, version as u64),
+            )
+            .await?;
+        assert_eq!(reopened.analysis(&aid).await?.owner.id, alice.id);
+    }
+    drop(reopened);
+    let reopened = Store::open(dir.path(), 4).await?;
+    let owner = reopened.analysis(&aid).await?.owner;
+    assert_eq!(owner.id, alice.id);
+    assert_eq!(owner.name, alice.name);
+    assert_eq!(owner.email, alice.email);
     Ok(())
 }
 
@@ -438,5 +466,247 @@ async fn acknowledged_commit_survives_process_kill() -> Result<()> {
     assert_eq!(s.users().await?.len(), 1);
     s.publish().await?;
     assert_eq!(s.events(0).await?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn dashboard_tracks_owner_assignments_and_personal_settings() -> Result<()> {
+    let (_dir, s, alice, bob, aid) = fixture().await?;
+    let c = s.connect().await?;
+    super::dashboard::insert_summaries(
+        &c,
+        &aid,
+        &[
+            json!({"entity":"1","parent":"1","label":"Cluster","incidents":10}),
+            json!({"entity":"1:1","parent":"1","label":"Theme","incidents":4}),
+        ],
+    )
+    .await?;
+    s.command(
+        aid.clone(),
+        alice.clone(),
+        command("1", json!({"type":"reviewer","userId":bob.id}), 0),
+    )
+    .await?;
+    let data = s.dashboard_data(&bob).await?;
+    assert_eq!(data["analyses"][0]["owner"]["id"], alice.id);
+    assert_eq!(data["assigned"].as_array().unwrap().len(), 2);
+    assert!(data["assigned"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|v| v["status"] == "Review"));
+    assert!(s.dashboard_data(&alice).await?["assigned"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    s.save_dashboard_preferences(
+        &bob,
+        &json!({"mine":{"archived":true},"expanded":[format!("{aid}:1")]}),
+    )
+    .await?;
+    assert_eq!(
+        s.dashboard_preferences(&bob).await?["mine"]["archived"],
+        true
+    );
+    assert_eq!(s.dashboard_preferences(&alice).await?, json!({}));
+    s.command(
+        aid.clone(),
+        alice.clone(),
+        command("", json!({"type":"archive"}), 0),
+    )
+    .await?;
+    assert_eq!(
+        s.dashboard_data(&bob).await?["analyses"][0]["archived"],
+        true
+    );
+    s.command(
+        aid.clone(),
+        alice.clone(),
+        command("", json!({"type":"restore"}), 1),
+    )
+    .await?;
+    s.command(
+        aid.clone(),
+        alice.clone(),
+        command("1", json!({"type":"reviewer","userId":null}), 1),
+    )
+    .await?;
+    assert!(s.dashboard_data(&bob).await?["assigned"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn version_one_dashboard_migration_indexes_only_confirmed_reviewers() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    {
+        let db = turso::Builder::new_local(dir.path().join("analysis.db").to_str().unwrap())
+            .build()
+            .await?;
+        let c = db.connect()?;
+        c.execute_batch(include_str!("schema.sql")).await?;
+        c.execute(
+            "INSERT INTO users VALUES('a','legacy:a','Alice','a@example.invalid',1)",
+            (),
+        )
+        .await?;
+        c.execute("INSERT INTO analyses VALUES('analysis','Legacy','legacy','unread.icas','fingerprint','a',0,0,1)",()).await?;
+        for (entity, unconfirmed) in [("1", false), ("2", true)] {
+            c.execute(
+                "INSERT INTO reviewers VALUES('analysis',?,?,0)",
+                params![
+                    entity,
+                    json!({"userId":"a","recorded":null,"unconfirmed":unconfirmed}).to_string()
+                ],
+            )
+            .await?;
+        }
+    }
+    let s = Store::open(dir.path(), 4).await?;
+    let c = s.connect().await?;
+    assert_eq!(scalar(&c, "SELECT version FROM schema_version").await?, 2);
+    assert_eq!(
+        scalar(&c, "SELECT COUNT(*) FROM reviewers WHERE user_id='a'").await?,
+        1
+    );
+    drop(c);
+    drop(s);
+    let s = Store::open(dir.path(), 4).await?;
+    assert_eq!(
+        scalar(&s.connect().await?, "SELECT COUNT(*) FROM analyses").await?,
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn dashboard_thousand_analyses_are_paged_without_artifact_reads() -> Result<()> {
+    let (_dir, s, alice, bob, aid) = fixture().await?;
+    let c = s.connect().await?;
+    execute(&c, "BEGIN").await?;
+    for i in 0..1000 {
+        let key = format!("catalog-{i:04}");
+        c.execute("INSERT INTO analyses SELECT ?,?, ?,artifact,fingerprint,creator,archived,version,created FROM analyses WHERE id=?",params![key.clone(),key.clone(),key.clone(),aid.clone()]).await?;
+        c.execute("INSERT INTO entities SELECT ?,entity,workflow,workflow_version,label,label_version FROM entities WHERE analysis=?",params![key.clone(),aid.clone()]).await?;
+        c.execute(
+            "INSERT INTO reviewers(analysis,entity,value,user_id) VALUES(?,'1',?,?)",
+            params![
+                key.clone(),
+                json!(Reviewer {
+                    user_id: Some(bob.id.clone()),
+                    ..Default::default()
+                })
+                .to_string(),
+                bob.id.clone()
+            ],
+        )
+        .await?;
+        super::dashboard::insert_summaries(
+            &c,
+            &key,
+            &[
+                json!({"entity":"1","parent":"1","label":"Cluster","incidents":150000}),
+                json!({"entity":"1:1","parent":"1","label":"Theme","incidents":20000}),
+            ],
+        )
+        .await?;
+    }
+    execute(&c, "COMMIT").await?;
+    let started = std::time::Instant::now();
+    let mut offset = 0;
+    let mut analyses = 0;
+    let mut entities = 0;
+    loop {
+        let page = s.dashboard_page(&bob, offset).await?;
+        analyses += page["analyses"].as_array().unwrap().len();
+        entities += page["assigned"].as_array().unwrap().len();
+        match page["nextOffset"].as_i64() {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert_eq!((analyses, entities), (1001, 2000));
+    println!(
+        "Dashboard 1,001 analyses / 2,000 assigned items: {:?}",
+        started.elapsed()
+    );
+    let started = std::time::Instant::now();
+    let mut tasks = vec![];
+    for _ in 0..50 {
+        let store = s.clone();
+        let user = bob.clone();
+        tasks.push(tokio::spawn(
+            async move { store.dashboard_page(&user, 0).await },
+        ));
+    }
+    for task in tasks {
+        assert_eq!(task.await??["assigned"].as_array().unwrap().len(), 500);
+    }
+    println!(
+        "Dashboard 50 simultaneous first-page readers: {:?}",
+        started.elapsed()
+    );
+    assert!(s.dashboard_data(&alice).await?["assigned"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn dashboard_backfill_resumes_and_keeps_completed_analyses() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let s = Store::open(dir.path(), 4).await?;
+    let user = s
+        .user("fixture:backfill", "Reviewer", "reviewer@example.invalid")
+        .await?;
+    let run = Arc::new(crate::fixtures::run(1200));
+    let review = ReviewData::new(&run)?;
+    let artifacts = crate::artifacts::Artifacts::new(s.root.clone(), 64 * 1024 * 1024);
+    let artifact = artifacts
+        .publish(
+            run.clone(),
+            review.clone(),
+            ViewState::default(),
+            Default::default(),
+        )
+        .await?;
+    let mut aids = vec![];
+    for name in ["Already indexed", "Needs indexing"] {
+        aids.push(
+            s.create(
+                &user,
+                &id(),
+                name,
+                &artifact,
+                InitialReview {
+                    review: &review,
+                    view: &ViewState::default(),
+                    metadata: &Default::default(),
+                },
+            )
+            .await?,
+        );
+    }
+    let c = s.connect().await?;
+    super::dashboard::insert_summaries(&c, &aids[0], &Store::entity_summaries(&run)).await?;
+    // A completed marker must prevent rereading the first artifact after an interruption.
+    c.execute(
+        "UPDATE analyses SET artifact='not-loaded.icas' WHERE id=?",
+        [aids[0].as_str()],
+    )
+    .await?;
+    s.backfill_dashboard(&artifacts).await?;
+    let count = scalar(&c, "SELECT COUNT(*) FROM dashboard_entities").await?;
+    assert_eq!(scalar(&c, "SELECT COUNT(*) FROM dashboard_ready").await?, 2);
+    s.backfill_dashboard(&artifacts).await?;
+    assert_eq!(
+        scalar(&c, "SELECT COUNT(*) FROM dashboard_entities").await?,
+        count
+    );
+    assert_eq!(count as usize, Store::entity_summaries(&run).len() * 2);
     Ok(())
 }

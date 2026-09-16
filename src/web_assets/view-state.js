@@ -1,7 +1,7 @@
 // Keep durable configuration separate from transient DOM and request state.
 export function captureView(state) {
   return structuredClone({
-    version: 1, selection: state.selection, expandedClusters: [...state.expandedClusters],
+    version: 2, reviewerFilter: state.reviewerFilter || {}, selection: state.selection, expandedClusters: [...state.expandedClusters],
     detailColumnFilters: state.detailColumnFilters, detailSort: state.detailSort,
     pivotRows: state.pivotRows, pivotColumns: state.pivotColumns,
     detailDrilldownRowIndices: state.detailDrilldownRowIndices,
@@ -9,6 +9,7 @@ export function captureView(state) {
   });
 }
 export function restoreView(state, view) {
+  state.reviewerFilter = structuredClone(view?.reviewerFilter || {});
   if (!view) return;
   state.selection = view.selection || { type: "all" };
   state.expandedClusters = new Set(view.expandedClusters || []);

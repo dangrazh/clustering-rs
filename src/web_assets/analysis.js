@@ -71,15 +71,21 @@ function formatTermList(terms) {
   return Array.isArray(terms) ? terms.join("\n") : "";
 }
 
+let activeProgressStream = null;
 export function listenForProgress(jobId) {
+  activeProgressStream?.close();
   state.analysisId=null;state.jobId=jobId;
+  showStep("analysis");
   const events = openProgressStream(jobId);
+  activeProgressStream = events;
   events.onmessage = async (message) => {
     const event = JSON.parse(message.data);
+    if (state.jobId !== jobId) {events.close();return;}
     applyProgressEvent(event);
     if (event.kind === "finished") {
       events.close();
-      await loadResult(jobId);
+      window.dispatchEvent(new Event("dashboard-refresh"));
+      if(document.getElementById("analysis").classList.contains("active")) await loadResult(jobId);
     }
     if (event.kind === "failed") {
       events.close();

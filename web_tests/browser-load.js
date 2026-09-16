@@ -10,7 +10,7 @@ try {
   await expect(page.locator("#signedInUser")).toHaveText("Alice");
   await page.getByRole("button",{name:"Analyses",exact:true}).click();
   const started = performance.now();
-  await page.getByRole("button",{name:"Browser acceptance",exact:true}).click();
+  await page.locator("#analysisLibrary").getByRole("button",{name:"Browser acceptance",exact:true}).click();
   await expect(page.locator("#analysisLibrary")).not.toBeVisible({timeout:60000});
   await expect(page.locator('[data-workflow-key="1"]')).toBeVisible({timeout:60000});
   const elapsedMs = Math.round(performance.now() - started);

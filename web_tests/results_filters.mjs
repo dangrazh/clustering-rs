@@ -89,3 +89,19 @@ test("combined pivot cells apply dimensions represented by detail and total cell
   assert.deepEqual(pivotCellFilters(pivot, 1, 1, [0], [2]), [{ column: 2, selected: ["Open"] }]);
   assert.deepEqual(pivotCellFilters(pivot, 1, 2, [0], [2]), []);
 });
+
+test("reviewer selection intersects column and drilldown filters", () => {
+  state.analysis.clusters = [
+    { id: 1, incident_row_indices: [0, 1], subgroups: [] },
+    { id: 2, incident_row_indices: [2, 3], subgroups: [] },
+  ];
+  state.shared = { reviewers: { 1: { value: { userId: "alice" } }, 2: { value: { userId: "bob" } } } };
+  state.reviewerFilter = { selected: true, users: ["bob"] };
+  state.workflowStates = [];
+  state.detailColumnFilters[1] = { selected: ["Zurich"], query: "", searchDeselected: false };
+  assert.deepEqual([...treeVisibleRows()], [3]);
+  state.detailDrilldownRowIndices = [2];
+  assert.equal(treeVisibleRows().size, 0);
+  state.reviewerFilter = {};
+  state.shared = null;
+});

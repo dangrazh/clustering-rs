@@ -15,9 +15,18 @@ Tests/
 !documentation/web-architecture.md
 !documentation/multi-user-operations-20260914.md
 !documentation/multi-user-implementation-status-20260914.md
+!documentation/dashboard-reviewer-requirements-20260916.md
+!documentation/dashboard-reviewer-implementation-plan-20260916.md
+!documentation/dashboard-reviewer-implementation-status-20260916.md
 !src/auth_fixtures/README.md
 *.example.json
 /tests
+!/tests/
+/tests/*
+!/tests/sessions.rs
+!/tests/common/
+/tests/common/*
+!/tests/common/mod.rs
 .dockerignore
 Dockerfile
 # src/IncidentClusteringAnalyzer/obj/

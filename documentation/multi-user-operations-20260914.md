@@ -134,3 +134,15 @@ The normalized email is the fallback identity key, so separate browsers and comp
 Shared mutations continue to require CSRF tokens and obtain authors from the established session. The login form uses a same-origin JSON request with a required custom header. Existing session-renewal behavior works with the fallback form, including refusing to submit pending drafts under a different identity.
 
 The earlier statements that fallback was not activated describe the 2026-09-14 delivery and are superseded by this section. Entra-specific release checks may be deferred while operating this explicitly selected fallback; container, backup and collaboration acceptance still apply.
+
+## Dashboard upgrade (schema 2, session format 4)
+
+Before upgrading, stop the application and take a verified backup using the existing application backup command. The new binary accepts schema 1 or 2 and upgrades schema 1 automatically. Existing owners, assignments and personal views remain intact. No new hosting service or identity configuration is required.
+
+First startup indexes existing analyses for Dashboard before opening the HTTP listener. Logs identify each analysis being indexed. This reads artifacts sequentially and commits a completion marker per analysis; interruption can be resumed by starting the same binary again. Subsequent starts skip completed analyses. The maintenance interval depends on the number and size of existing artifacts: rehearse against a backup copy for a large installation. If an artifact cannot be read or fails validation, startup reports its analysis ID; restore or repair the affected artifact before retrying. Do not delete analyses to bypass an indexing error.
+
+New saves already carry dashboard summaries. Dashboard list requests read compact database metadata rather than loading incident files. Personal dashboard settings are backed up in the same database. Existing stopped-service backup/restore behavior applies unchanged.
+
+New `.icas` exports use version 4; this application still imports versions 1–3. Export files remain complete analyses, while reviewer filtering applies to data exports and is retained as personal view configuration in sessions. Older application binaries cannot be assumed to read version 4 files or schema 2 databases. Rollback requires the previous binary and a compatible pre-upgrade backup; preserve upgraded data separately, because reverting that backup does not retain later edits.
+
+Dashboard lists and assignment labels update automatically. User job summaries poll every three seconds while Dashboard is visible; shared changes arrive through the existing SSE connection. Dashboard preference errors display a retrying status and retain current controls while the page remains open. Unsent settings are not guaranteed to survive closing the browser.

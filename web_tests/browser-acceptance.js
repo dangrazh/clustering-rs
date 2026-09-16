@@ -18,13 +18,29 @@ try {
       await page.getByRole('button',{name:'Sign in',exact:true}).click();
     }else await page.goto(process.env.FIXTURE_URL);
     await expect(page.locator("#signedInUser")).toHaveText(name);
+    await expect(page.locator("#dashboard")).toBeVisible();
+    await expect(page.locator(".dashboard-panel")).toHaveCount(4);
+    await expect(page.locator("#dashboard-all-title")).toBeVisible();
+    await expect(page.locator("#dashboardGrid .dashboard-error").filter({hasText:"Unable"})).toHaveCount(0);
+    await expect(page.locator(".dashboard-panel").first()).toHaveCSS("background-color",await page.locator(".topbar").evaluate(e=>getComputedStyle(e).backgroundColor));
+    await page.screenshot({path:`target/ui-theme/dashboard-${mode}.png`});
     await page.getByRole("button",{name:"Analyses",exact:true}).click();
-    await expect(page.getByRole("button",{name:"Browser acceptance",exact:true})).toBeVisible();
+    await expect(page.locator("#analysisLibrary").getByRole("button",{name:"Browser acceptance",exact:true})).toBeVisible();
     const panelColor=await page.locator(".topbar").evaluate(e=>getComputedStyle(e).backgroundColor);
     await expect(page.locator("#analysisLibrary")).toHaveCSS("background-color",panelColor);await expect(page.locator(".collaboration-bar")).toHaveCSS("background-color",panelColor);
     await page.screenshot({path:`target/ui-theme/library-${mode}.png`});
-    await page.getByRole("button",{name:"Browser acceptance",exact:true}).click();
-    await expect(page.locator("#sharedTitle")).toHaveText("Browser acceptance");return page;
+    await page.locator("#analysisLibrary").getByRole("button",{name:"Browser acceptance",exact:true}).click();
+    await expect(page.locator("#sharedTitle")).toHaveText("Browser acceptance");
+    await expect(page.locator("#clusterList .tree-row").first()).toBeVisible();
+    await expect(page.locator("#detailTable table")).toBeVisible();
+    const geometry=await page.evaluate(()=>Object.fromEntries(["results","clusterList","detailTable"].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return [id,{width:r.width,height:r.height,x:r.x,y:r.y}]})));
+    expect(geometry.detailTable.x).toBeGreaterThan(geometry.clusterList.x + geometry.clusterList.width);
+    expect(geometry.detailTable.y).toBeLessThan(geometry.clusterList.y + 150);
+    expect(geometry.clusterList.width).toBeGreaterThan(150);
+    expect(geometry.detailTable.width).toBeGreaterThan(150);
+    expect(geometry.detailTable.height).toBeGreaterThan(150);
+    await page.screenshot({path:`target/ui-theme/results-layout-${mode}.png`});
+    return page;
   }
   const alice=await page(process.env.FIXTURE_ALICE,"Alice"),bob=await page(process.env.FIXTURE_BOB,"Bob");
   for(const p of [alice,bob]){await p.locator('[data-workflow-key="1"]').click();await p.locator("#editLabel").click();}
@@ -46,7 +62,7 @@ try {
   await bob.locator("#closeWorkflow").click();
   await bob.evaluate(async()=>{const {state}=await import('/state.js');state.pivotRows=[2];});
   await expect(bob.locator("#personalSaveStatus")).toHaveText("View saved");
-  await bob.reload();await bob.getByRole("button",{name:"Analyses",exact:true}).click();await bob.getByRole("button",{name:"Browser acceptance",exact:true}).click();
+  await bob.reload();await bob.getByRole("button",{name:"Analyses",exact:true}).click();await bob.locator("#analysisLibrary").getByRole("button",{name:"Browser acceptance",exact:true}).click();
   await expect.poll(()=>bob.evaluate(async()=>{const {state}=await import('/state.js');return state.pivotRows;})).toEqual([2]);
   await expect.poll(()=>alice.evaluate(async()=>{const {state}=await import('/state.js');return state.pivotRows;})).toEqual([]);
   await alice.locator("#commentForm textarea").fill("Retried once after lost acknowledgment");
@@ -102,6 +118,63 @@ try {
       await expect(p.locator("#jobsDialog .job-metadata").first()).toContainText("Columns: 3");
     }
     await p.screenshot({path:`target/ui-theme/jobs-${mode}.png`});await p.locator("#jobsDialog").getByRole("button",{name:"Close",exact:true}).click();
+  }
+
+  // Reviewer filter, assigned-work navigation, cross-device settings and live removal.
+  await bob.locator('[data-step="dashboard"]').click();
+  const assigned=bob.locator('.dashboard-panel').filter({has:bob.locator('#dashboard-assigned-title')});
+  await expect(assigned.locator('summary').first()).toContainText('Cluster 1');
+  await assigned.locator('summary').first().click();
+  await assigned.getByRole('button',{name:/^Cluster 1 —/}).click();
+  await expect(bob.locator('#results')).toBeVisible();
+  await expect(bob.locator('.tree-reviewer').first()).toHaveText('Bob');
+  await bob.locator('.reviewer-filter summary').click();
+  await bob.locator('.reviewer-choices').getByLabel('Unassigned',{exact:true}).check();
+  await expect(bob.locator('[data-workflow-key="1"]')).toHaveCount(0);
+  await expect.poll(()=>bob.evaluate(async()=>{const {state}=await import('/state.js');return state.reviewerFilter.unassigned;})).toBe(true);
+  await bob.locator('[data-step="dashboard"]').click();
+  await assigned.getByRole('button',{name:/^Theme 1:1 —/}).click();
+  await expect(bob.locator('[data-workflow-key="1:1"]')).toBeVisible();
+  await expect.poll(()=>bob.evaluate(async()=>{const {state}=await import('/state.js');return state.selection.type;})).toBe('theme');
+  await bob.locator('[data-step="dashboard"]').click();
+  await bob.getByRole('searchbox',{name:'Search All analyses'}).fill('Browser');
+  await expect(bob.locator('#dashboardSave')).toHaveText('Dashboard settings saved');
+  const otherDevice=await browser.newContext({colorScheme:'dark'});
+  await otherDevice.addCookies([{name:'app_session',value:process.env.FIXTURE_BOB,url:process.env.FIXTURE_URL}]);
+  const otherPage=await otherDevice.newPage();await otherPage.goto(process.env.FIXTURE_URL);
+  await expect(otherPage.getByRole('searchbox',{name:'Search All analyses'})).toHaveValue('Browser');
+  await otherPage.getByRole('searchbox',{name:'Search All analyses'}).fill('Separate device');
+  await expect(otherPage.locator('#dashboardSave')).toHaveText('Dashboard settings saved');
+  await expect(bob.getByRole('searchbox',{name:'Search All analyses'})).toHaveValue('Browser');
+  await otherDevice.close();
+  await bob.getByRole('searchbox',{name:'Search All analyses'}).fill('');
+  await bob.getByRole('searchbox',{name:'Search All analyses'}).fill('Browser');
+  await expect(bob.locator('#dashboardSave')).toHaveText('Dashboard settings saved');
+  await bob.reload();
+  await expect(bob.locator('#dashboard')).toBeVisible();
+  await expect(bob.getByRole('searchbox',{name:'Search All analyses'})).toHaveValue('Browser');
+  await expect(bob.locator('.dashboard-list details').first()).toHaveAttribute('open','');
+  await bob.setViewportSize({width:700,height:950});
+  await expect(bob.locator('.dashboard-grid')).toHaveCSS('grid-template-columns',/^[0-9.]+px$/);
+  await bob.screenshot({path:'target/ui-theme/dashboard-narrow-dark.png',fullPage:true});
+  await bob.setViewportSize({width:1280,height:900});
+  await bob.screenshot({path:'target/ui-theme/dashboard-populated-dark.png',fullPage:true});
+  const current=await bob.request.get(`${process.env.FIXTURE_URL}/api/analyses/${identity.aid}/review`);const snap=await current.json();
+  const release=await bob.request.post(`${process.env.FIXTURE_URL}/api/analyses/${identity.aid}/commands`,{headers:{'X-CSRF-Token':identity.csrf},data:{commandId:crypto.randomUUID(),target:'1',expected:snap.reviewers['1'].version,action:{type:'reviewer',userId:null}}});
+  expect(release.status()).toBe(200);
+  await expect(bob.locator('.dashboard-list details')).toHaveCount(0);
+
+  for(const [p,mode] of [[alice,"light"],[bob,"dark"]]){
+    await p.locator('[data-step="dashboard"]').click();
+    await expect(p.locator('.dashboard-row').first()).toBeVisible();
+    const rows=await p.locator('.dashboard-row').evaluateAll(elements=>elements.map(row=>{
+      const title=row.querySelector('button').getBoundingClientRect();
+      const meta=row.querySelector('.dashboard-meta').getBoundingClientRect();
+      return {overlap:Math.min(title.bottom,meta.bottom)-Math.max(title.top,meta.top),right:meta.left>=title.right};
+    }));
+    expect(rows.length).toBeGreaterThan(0);
+    for(const row of rows){expect(row.overlap).toBeGreaterThan(0);expect(row.right).toBe(true);}
+    await p.screenshot({path:`target/ui-theme/dashboard-single-line-${mode}.png`,fullPage:true});
   }
   if(errors.length)throw new Error(errors.join("\n"));
   console.log("PASS: two-browser edits, retained conflict draft, attribution, comment ownership, claiming, personal views, lost-ack retry, same-account sign-in renewal, archive/restore and portable import");
