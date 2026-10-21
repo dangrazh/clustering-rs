@@ -59,6 +59,8 @@ pub async fn startup_cleanup(store: &Store) -> Result<()> {
 
 #[derive(Serialize, Deserialize)]
 pub struct Input {
+    #[serde(default)]
+    pub column_types: Vec<crate::columns::ColumnType>,
     pub source: SourceTable,
     pub mapping: ColumnMapping,
     pub settings: RunSettings,
@@ -256,7 +258,7 @@ pub fn worker(input: &Path, output: &Path) -> Result<()> {
     );
     let input: Input =
         serde_json::from_reader(std::io::BufReader::new(std::fs::File::open(input)?))?;
-    let run = crate::worker::run_analysis_with_progress(
+    let mut run = crate::worker::run_analysis_with_progress(
         input.source,
         input.mapping,
         input.settings,
@@ -266,6 +268,7 @@ pub fn worker(input: &Path, output: &Path) -> Result<()> {
             }
         },
     )?;
+    run.column_types=if input.column_types.len()==run.source.headers.len(){input.column_types}else{crate::columns::infer(&run.source)};
     let review = ReviewData::new(&run)?;
     let bytes =
         session::encode_portable(&run, &review, &ViewState::default(), &Default::default())?;

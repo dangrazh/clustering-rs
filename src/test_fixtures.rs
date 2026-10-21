@@ -37,6 +37,7 @@ pub fn run(count: usize) -> AnalysisRun {
         })
         .collect();
     AnalysisRun {
+        column_types: vec![],
         source: SourceTable {
             source_path: None,
             worksheet_name: None,

@@ -73,6 +73,7 @@ export async function startAnalysisJob(sourceId, mapping, settings) {
       sourceId,
       mapping,
       settings,
+      columnTypes:state.source.columnTypes||[],
     }),
   });
   return jsonOrThrow(response);
@@ -96,13 +97,14 @@ export async function restoreSession(file) {
   return jsonOrThrow(response);
 }
 
-export async function fetchPivot(jobId, rowIndices, rowColumns, columnColumns) {
-  const response = await fetch(`/api/jobs/${jobId}/pivot`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rowIndices, rowColumns, columnColumns }),
-  });
-  return jsonOrThrow(response);
+export async function fetchPivot(jobId, rowIndices, rowColumns, columnColumns, onProgress, signal) {
+  const response=await fetch(`/api/jobs/${jobId}/pivot`,{method:"POST",signal,headers:{"Content-Type":"application/json","Accept":"application/x-ndjson"},body:JSON.stringify({rowIndices,rowColumns,columnColumns})});
+  if(!response.ok)return jsonOrThrow(response);
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="";
+  try {while(true){const {value,done}=await reader.read();buffer+=decoder.decode(value,{stream:!done});let end;
+    while((end=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(!line.trim())continue;const item=JSON.parse(line);if(item.type==="error")throw Error(item.error);if(item.type==="result")return item.result;onProgress?.(item);}
+    if(done)throw Error("Pivot response ended before completion");
+  }}finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
 }
 
 export async function exportExcel(jobId, rowIndices) {
@@ -115,7 +117,7 @@ export async function fetchReview(jobId) {
 export async function mutateReview(jobId, payload) {
   if(state.analysisId){
     const {action,target}=payload, base=payload.base;
-    const expected=action.type==="rename"?base.versions[target]?.label:action.type==="reviewer"?base.reviewers[target.split(":")[0]]?.version:action.type.endsWith("Comment")?base.commentAccess[action.id]?.version:base.versions[target]?.workflow;
+    const expected=action.type==="rename"?base.versions[target]?.label:action.type==="reviewer"?base.reviewers[target]?.version:action.type.endsWith("Comment")?base.commentAccess[action.id]?.version:base.versions[target]?.workflow;
     const command={commandId:crypto.randomUUID(),target,action,expected:expected||0,parentVersion:base.versions[target.split(":")[0]]?.workflow||0};
     const url=`/api/analyses/${state.analysisId}/commands`;
     state.saveStatus="Saving";window.dispatchEvent(new Event("shared-save-state"));

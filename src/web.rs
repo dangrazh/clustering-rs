@@ -4,6 +4,7 @@ mod review_api;
 mod shared;
 #[cfg(test)]
 mod shared_tests;
+mod trends;
 use crate::io::{import_source, import_xlsx_sheet, list_worksheets};
 use crate::model::{AnalysisRun, ColumnMapping, LabelTermPolicy, RunSettings, SourceTable};
 use crate::progress::ProgressUpdate;
@@ -113,6 +114,7 @@ struct ProgressEvent {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceResponse {
+    column_types:Vec<crate::columns::ColumnType>,
     source_id: String,
     file_name: String,
     worksheets: Vec<String>,
@@ -135,6 +137,8 @@ struct AnalysisSummary {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StartAnalysisRequest {
+    #[serde(default)]
+    column_types: Vec<crate::columns::ColumnType>,
     source_id: String,
     mapping: ColumnMapping,
     settings: RunSettings,
@@ -227,13 +231,14 @@ pub async fn serve(address: SocketAddr, config: AppConfig) -> Result<()> {
     tracing::info!("web UI listening on http://{address}");
     crate::jobs::interrupted(&state.inner.store).await?;
     let supervisor = tokio::spawn(jobs_runtime::supervise(state.clone()));
+    let trend_supervisor = tokio::spawn(trends::supervise(state.clone()));
     let publisher = shared::start_publisher(state.inner.store.clone());
     let telemetry = start_telemetry(state.inner.clone());
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
     loop {
-        let accepted = tokio::select! {accepted=listener.accept()=>accepted, _=&mut shutdown=>{supervisor.abort();publisher.abort();telemetry.abort();let _=supervisor.await;let _=publisher.await;let _=telemetry.await;return Ok(());}};
+        let accepted = tokio::select! {accepted=listener.accept()=>accepted, _=&mut shutdown=>{supervisor.abort();trend_supervisor.abort();publisher.abort();telemetry.abort();let _=supervisor.await;let _=trend_supervisor.await;let _=publisher.await;let _=telemetry.await;return Ok(());}};
         let (stream, _) = accepted?;
         let state = state.clone();
         tokio::spawn(async move {
@@ -417,11 +422,27 @@ async fn handle(request: Request<Incoming>, mut state: WebState) -> Result<Respo
             "text/javascript; charset=utf-8",
             include_str!("web_assets/jobs-view.js"),
         )),
+        (Method::GET, "/series.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            include_str!("web_assets/series.js"),
+        )),
+        (Method::GET, "/series-chart.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            include_str!("web_assets/series-chart.js"),
+        )),
+        (Method::GET, "/target-navigation.js") => Ok(text_response(
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            include_str!("web_assets/target-navigation.js"),
+        )),
         (Method::GET, "/dashboard.js") => Ok(text_response(
             StatusCode::OK,
             "text/javascript; charset=utf-8",
             include_str!("web_assets/dashboard.js"),
         )),
+        (Method::GET, "/columns.js") => Ok(text_response(StatusCode::OK,"text/javascript",include_str!("web_assets/columns.js"))),
         (Method::GET, "/reviewers.js") => Ok(text_response(
             StatusCode::OK,
             "text/javascript; charset=utf-8",
@@ -618,6 +639,7 @@ async fn start_analysis_endpoint(
             })
             .context("source not found")?
     };
+    anyhow::ensure!(payload.column_types.is_empty()||payload.column_types.len()==source.headers.len(),"Column type count does not match source");
     validate_mapping(&payload.mapping, &source)?;
     payload.settings.label_terms = merge_label_term_policy(
         &state.inner.config.label_terms,
@@ -628,6 +650,7 @@ async fn start_analysis_endpoint(
         &state.inner.store,
         state.user.as_ref().context("Sign in required")?,
         crate::jobs::Input {
+            column_types: payload.column_types,
             source,
             mapping: payload.mapping,
             settings: payload.settings,
@@ -790,6 +813,10 @@ async fn pivot_endpoint(
         .trim_start_matches("/api/jobs/")
         .trim_end_matches("/pivot")
         .trim_end_matches('/');
+    let streaming = request
+        .headers()
+        .get("accept")
+        .is_some_and(|v| v == "application/x-ndjson");
     let body = request.into_body().collect().await?.to_bytes();
     let payload: PivotRequest = serde_json::from_slice(&body)?;
     let job = review_api::find_job(&state, job_id)?;
@@ -799,6 +826,9 @@ async fn pivot_endpoint(
         .result
         .clone()
         .context("Analysis result is not ready.")?;
+    if streaming {
+        return pivot_stream(analysis, payload);
+    }
     let response =
         tokio::task::spawn_blocking(move || build_pivot_response(&analysis, payload)).await??;
     json_response(StatusCode::OK, &response)
@@ -915,7 +945,42 @@ fn excel_response(bytes: Vec<u8>, filename: &str) -> Result<Response<BoxBody>> {
     Ok(response)
 }
 
+fn pivot_stream(analysis: Arc<AnalysisRun>, payload: PivotRequest) -> Result<Response<BoxBody>> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<serde_json::Value>(8);
+    tokio::task::spawn_blocking(move || {
+        let progress = |phase: &str, completed: usize, total: usize| {
+            let _=tx.try_send(serde_json::json!({"type":"progress","phase":phase,"completed":completed,"total":total}));
+        };
+        let result = build_pivot_with_progress(&analysis, payload, &progress);
+        let message = match result {
+            Ok(result) => serde_json::json!({"type":"result","result":result}),
+            Err(error) => serde_json::json!({"type":"error","error":error.to_string()}),
+        };
+        let _ = tx.blocking_send(message);
+    });
+    let stream = stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|value| {
+            (
+                Ok::<_, Infallible>(Frame::data(Bytes::from(format!("{value}\n")))),
+                rx,
+            )
+        })
+    });
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("X-Accel-Buffering", "no")
+        .body(BodyExt::boxed(StreamBody::new(stream)))?)
+}
+
 fn build_pivot_response(analysis: &AnalysisRun, request: PivotRequest) -> Result<PivotResponse> {
+    build_pivot_with_progress(analysis, request, &|_, _, _| {})
+}
+fn build_pivot_with_progress(
+    analysis: &AnalysisRun,
+    request: PivotRequest,
+    progress: &dyn Fn(&str, usize, usize),
+) -> Result<PivotResponse> {
     let column_count = analysis.source.headers.len();
     validate_pivot_columns(&request.row_columns, column_count)?;
     validate_pivot_columns(&request.column_columns, column_count)?;
@@ -927,12 +992,17 @@ fn build_pivot_response(analysis: &AnalysisRun, request: PivotRequest) -> Result
         .collect::<Vec<_>>();
     let mut pivot = PivotAccumulator::default();
 
-    for row_index in request.row_indices.iter().copied() {
+    progress("Summarizing records", 0, request.row_indices.len());
+    for (index, row_index) in request.row_indices.iter().copied().enumerate() {
+        if index % 512 == 0 {
+            progress("Summarizing records", index, request.row_indices.len());
+        }
         let Some(row) = analysis.source.rows.get(row_index) else {
             continue;
         };
-        let row_key = pivot_key(row, &row_columns, "Count");
-        let column_key = pivot_key(row, &column_columns, "Count");
+        let interpreted:Vec<_>=row.iter().enumerate().map(|(i,v)|crate::columns::pivot_value(v,analysis.column_types.get(i))).collect();
+        let row_key = pivot_key(&interpreted, &row_columns, "Count");
+        let column_key = pivot_key(&interpreted, &column_columns, "Count");
         let row_filter_values = pivot_filter_values(row, &row_columns);
         let column_filter_values = pivot_filter_values(row, &column_columns);
         pivot.add(
@@ -944,11 +1014,13 @@ fn build_pivot_response(analysis: &AnalysisRun, request: PivotRequest) -> Result
         );
     }
 
-    Ok(pivot.into_response(
+    progress("Arranging groups", 0, 0);
+    Ok(pivot.into_response_progress(
         request.row_indices.len(),
         &analysis.source.headers,
         &row_columns,
         &column_columns,
+        progress,
     ))
 }
 
@@ -1011,12 +1083,29 @@ impl PivotAccumulator {
         self.grand_total += 1;
     }
 
+    #[cfg(test)]
     fn into_response(
+        self,
+        _record_count: usize,
+        headers: &[String],
+        row_columns: &[usize],
+        column_columns: &[usize],
+    ) -> PivotResponse {
+        self.into_response_progress(
+            _record_count,
+            headers,
+            row_columns,
+            column_columns,
+            &|_, _, _| {},
+        )
+    }
+    fn into_response_progress(
         mut self,
         _record_count: usize,
         headers: &[String],
         row_columns: &[usize],
         column_columns: &[usize],
+        progress: &dyn Fn(&str, usize, usize),
     ) -> PivotResponse {
         if self.row_keys.is_empty() {
             self.row_keys.insert(vec!["Count".to_owned()]);
@@ -1062,7 +1151,10 @@ impl PivotAccumulator {
 
         let mut rows = Vec::with_capacity(row_keys.len() + usize::from(!row_columns.is_empty()));
         let mut previous_row_key: Option<&[String]> = None;
-        for row_key in &row_keys {
+        for (index, row_key) in row_keys.iter().enumerate() {
+            if index % 64 == 0 {
+                progress("Building pivot rows", index, row_keys.len());
+            }
             let mut cells = display_row_key(row_key, previous_row_key, row_columns.is_empty());
             for column_key in &column_keys {
                 cells.push(
@@ -1353,6 +1445,7 @@ impl JobSnapshot {
 
 fn source_response(source_id: &str, stored: &StoredSource) -> SourceResponse {
     SourceResponse {
+        column_types: crate::columns::infer(&stored.source),
         source_id: source_id.to_owned(),
         file_name: stored.file_name.clone(),
         worksheets: stored.worksheets.clone(),
@@ -1366,7 +1459,7 @@ fn source_response(source_id: &str, stored: &StoredSource) -> SourceResponse {
 
 fn analysis_summary(run: &AnalysisRun) -> AnalysisSummary {
     AnalysisSummary {
-        clusters: run.clusters.len(),
+        clusters: run.clusters.iter().filter(|c| c.id.0 != 0).count(),
         processed_incidents: run.processed_incidents.len(),
         ignored_rows: run.ignored_rows.len(),
         unclustered_incidents: run.unclustered_row_indices.len(),
@@ -1500,5 +1593,34 @@ mod tests {
             response.column_filter_values,
             vec![vec![vec!["Zurich".to_owned()]]]
         );
+    }
+}
+
+#[cfg(test)]
+mod enhancement_tests {
+    use super::*;
+    use crate::fixtures;
+    #[test]
+    fn pivot_reports_real_counts_and_preserves_results() -> Result<()> {
+        let run=fixtures::run(1200);
+        let updates=Mutex::new(vec![]);
+        let request=||PivotRequest {row_indices:(0..1200).collect(),row_columns:vec![2],column_columns:vec![]};
+        let actual=build_pivot_with_progress(&run,request(),&|phase,done,total|updates.lock().unwrap().push((phase.to_owned(),done,total)))?;
+        assert_eq!(serde_json::to_value(actual)?,serde_json::to_value(build_pivot_response(&run,request())?)?);
+        let updates=updates.into_inner().unwrap();
+        assert!(updates.iter().any(|(phase,done,total)|phase=="Summarizing records"&&*done==1024&&*total==1200));
+        assert!(updates.iter().any(|(phase,_,total)|phase=="Building pivot rows"&&*total==2));
+        Ok(())
+    }
+    #[tokio::test]
+    async fn streamed_pivot_delivers_progress_then_result() -> Result<()> {
+        let run=Arc::new(fixtures::run(1200));
+        let response=pivot_stream(run,PivotRequest{row_indices:(0..1200).collect(),row_columns:vec![2],column_columns:vec![]})?;
+        assert_eq!(response.headers()[header::CONTENT_TYPE],"application/x-ndjson");
+        let bytes=response.into_body().collect().await?.to_bytes();
+        let values=String::from_utf8(bytes.to_vec())?.lines().map(serde_json::from_str::<serde_json::Value>).collect::<std::result::Result<Vec<_>,_>>()?;
+        assert!(values.iter().any(|v|v["type"]=="progress"));
+        assert_eq!(values.last().unwrap()["result"]["recordCount"],1200);
+        Ok(())
     }
 }

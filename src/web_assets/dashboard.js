@@ -1,10 +1,11 @@
+import { openReviewTarget } from "./target-navigation.js";
 import {jobSummaryText,jobAction} from "./jobs-view.js";
 import {state} from "./state.js";
 import {request} from "./api.js";
-import {loadResult,renderResults,treeVisibleRows} from "./results.js";
+import {loadResult} from "./results.js";
 import {listenForProgress} from "./analysis.js";
 import {noticeDialog} from "./ui.js";
-import {statusLabels,effectiveWorkflow} from "./workflow.js";
+import {statusLabels} from "./workflow.js";
 const post=value=>({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
 async function json(url,options){const r=await request(url,options),v=await r.json();if(!r.ok)throw Error(v.error||r.statusText);return v;}
 const node=(tag,text,cls)=>{const e=document.createElement(tag);if(text!=null)e.textContent=text;if(cls)e.className=cls;return e;};
@@ -28,7 +29,7 @@ export async function initializeDashboard(openAnalysis){
   function replaceList(key,build){const list=sections[key].list,scroll=list.scrollTop;const focus=document.activeElement?.dataset?.key;list.replaceChildren();build(list);list.scrollTop=scroll;if(focus){const match=[...list.querySelectorAll("[data-key]")].find(e=>e.dataset.key===focus);match?.focus({preventScroll:true});}}
   const analysisLimits={mine:100,all:100};
   function analysisList(key){replaceList(key,list=>{let entries=data.analyses.filter(a=>(key!=="mine"||a.owner.id===state.user.id)&&(prefs[key].archived||!a.archived)&&a.name.normalize().toLowerCase().includes(prefs[key].search.trim().normalize().toLowerCase()));let shown=0;const more=()=>{for(const a of entries.slice(shown,analysisLimits[key])){const row=node("div",null,"dashboard-row"),open=button(a.name,()=>openAnalysis(a.id));open.dataset.key=`${key}:${a.id}`;row.append(open,node("p",`${a.owner.name} · ${new Date(a.created*1000).toLocaleString()} · ${a.archived?"Archived":"Active"}`,"dashboard-meta"));list.append(row);}shown=analysisLimits[key];if(shown<entries.length){const next=button("Show more",()=>{next.remove();analysisLimits[key]+=100;more();});list.append(next);}};if(!entries.length)empty(list,"No analyses match this view.");else more();});}
-  async function openTarget(aid,item){if(await openAnalysis(aid)===false)return;if(state.analysisId!==aid)return;const [clusterId,themeId]=item.entity.split(":").map(Number);const cluster=state.analysis.clusters.find(c=>c.id===clusterId),theme=themeId==null?null:cluster?.subgroups.find(t=>t.id===themeId);if(!cluster||themeId!=null&&!theme)throw Error("This review item is no longer available.");state.selection=theme?{type:"theme",cluster:clusterId,theme:themeId}:{type:"cluster",cluster:clusterId};state.expandedClusters.add(String(clusterId));const visible=treeVisibleRows();if(visible&&!(theme||cluster).incident_row_indices.some(row=>visible.has(row))){state.workflowStates=[];state.reviewerFilter={};state.detailColumnFilters=[];state.detailDrilldownRowIndices=null;state.detailDrilldownLabel="";}if(theme&&state.workflowStates.length&&!state.workflowStates.includes(effectiveWorkflow(state.review,item.entity).status))state.workflowStates=[];state.detailPage=1;renderResults();}
+  const openTarget=(aid,item)=>openReviewTarget(openAnalysis,aid,item.entity);
   let assignedLimit=100;
   const themeLimits=new Map();
   function assignedList(){
@@ -43,7 +44,7 @@ export async function initializeDashboard(openAnalysis){
         const parents=[...new Set(matching.map(i=>i.parent))].sort((x,y)=>Number(x)-Number(y));
         for(const parent of parents){
           if(++groups>assignedLimit)continue;
-          const cluster=items.find(i=>i.entity===parent);if(!cluster)continue;
+          const child=items.find(i=>i.parent===parent);const cluster=items.find(i=>i.entity===parent)||{...child,entity:parent,label:child.parentLabel,incidents:child.parentIncidents,contextOnly:true};
           if(lastAnalysis!==a.id){list.append(node("h4",a.name+(a.archived?" (Archived)":"")));lastAnalysis=a.id;}
           const key=`${a.id}:${parent}`,details=node("details"),summary=node("summary",`Cluster ${parent} — ${cluster.label}`);
           summary.append(node("span",` · ${statusLabels[cluster.status]||cluster.status} · ${cluster.incidents.toLocaleString()} incidents`,"dashboard-meta"));
@@ -57,8 +58,8 @@ export async function initializeDashboard(openAnalysis){
           };
           function renderChildren(){
             rendered=true;children.replaceChildren();
-            if(!prefs.assigned.status||cluster.status===prefs.assigned.status)children.append(row(cluster));
-            else children.append(node("p","Parent context — status does not match filter","dashboard-meta"));
+            if(!cluster.contextOnly&&(!prefs.assigned.status||cluster.status===prefs.assigned.status))children.append(row(cluster));
+            else children.append(node("p","Parent context — assigned work is listed below","dashboard-meta"));
             const themes=matching.filter(i=>i.parent===parent&&i.entity!==parent).sort((x,y)=>Number(x.entity.split(":")[1])-Number(y.entity.split(":")[1]));
             const limit=themeLimits.get(key)||100;
             for(const theme of themes.slice(0,limit))children.append(row(theme,true));

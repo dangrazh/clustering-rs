@@ -99,7 +99,11 @@ pub(super) fn cluster_workbook_collaborative(
                     .unwrap_or_default(),
                 if context { "Yes".into() } else { "No".into() },
                 metadata
-                    .and_then(|m| m.reviewers.get(&cluster.id.0.to_string()))
+                    .and_then(|m| {
+                        m.reviewers
+                            .get(&key)
+                            .or_else(|| m.reviewers.get(&cluster.id.0.to_string()))
+                    })
                     .and_then(|r| {
                         r.recorded.as_ref().map(|a| {
                             format!(

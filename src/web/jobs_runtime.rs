@@ -143,6 +143,8 @@ pub(super) async fn supervise(state: WebState) {
     }
 }
 async fn run_one(state: &WebState, job: &jobs::Job) -> Result<()> {
+    let gate = state.inner.store.lock("heavy-computation");
+    let _permit = gate.write().await;
     run_child(state, job, std::env::current_exe()?).await
 }
 pub(super) async fn run_child(

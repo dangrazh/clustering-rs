@@ -258,6 +258,27 @@ mod tests {
             .await?;
         let jid = format!("job-{}", crate::storage::id());
         crate::jobs::retain_import(&store, &user, &jid, &artifact).await?;
+        let series = store
+            .create_series(&user, &crate::storage::id(), "Restored trends")
+            .await?;
+        let series_id = series["id"].as_str().unwrap().to_owned();
+        let trend_model =
+            crate::trends::fit(&crate::fixtures::run(20), "backup-fixture".into(), false);
+        let profiles = crate::trends::profiles(&crate::fixtures::run(20), &trend_model);
+        store
+            .save_trend_profile("backup-profile", &profiles)
+            .await?;
+        let task = store
+            .series_command(
+                &user,
+                &series_id,
+                &crate::trends::Command {
+                    command_id: crate::storage::id(),
+                    expected: 0,
+                    action: crate::trends::Action::Recalculate,
+                },
+            )
+            .await?;
         let expected = store.review(&aid, &user).await?;
         let copy = dir.path().join("backup");
         assert!(backup(&root, &copy).is_err());
@@ -269,6 +290,18 @@ mod tests {
         assert_eq!(
             store.dashboard_preferences(&user).await?["mine"]["search"],
             "Restore"
+        );
+        assert_eq!(store.series(&series_id).await?.name, "Restored trends");
+        assert_eq!(
+            store.trend_profile("backup-profile").await?.unwrap().len(),
+            profiles.len()
+        );
+        assert_eq!(
+            store
+                .trend_task(task["task"].as_str().unwrap())
+                .await?
+                .state,
+            "queued"
         );
         assert_eq!(store.users().await?[0].id, user.id);
         assert_eq!(store.review(&aid, &user).await?, expected);

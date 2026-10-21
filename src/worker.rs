@@ -107,6 +107,7 @@ pub fn run_analysis_with_progress(
     );
 
     Ok(AnalysisRun {
+        column_types: vec![],
         source,
         mapping,
         settings,
@@ -119,7 +120,8 @@ pub fn run_analysis_with_progress(
             clustering_ms,
             ..Default::default()
         },
-    })
+    }
+    .with_unclustered())
 }
 
 fn mapped_column_count(mapping: &ColumnMapping) -> usize {

@@ -1,3 +1,4 @@
+import {renderColumnTypes} from "./columns.js";
 import { state } from "./state.js";
 import { downloadJson, setStatus, showError, showStep } from "./ui.js";
 import { escapeHtml } from "./utils.js";
@@ -45,6 +46,7 @@ export function bindMappingEvents() {
 }
 
 export function renderMapping() {
+  if(state.source)renderColumnTypes(document.getElementById("mappingColumnTypes"),state.source.headers,state.source.columnTypes);
   const source = state.source;
   if (!source || !state.mapping) return;
   const form = document.getElementById("mappingForm");

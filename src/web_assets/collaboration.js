@@ -1,3 +1,4 @@
+import { initializeSeries } from "./series.js";
 import { jobSummaryText } from "./jobs-view.js";
 import { initializeDashboard } from "./dashboard.js";
 import { state } from "./state.js";
@@ -64,6 +65,7 @@ export async function initializeCollaboration(){
     bar.replaceChildren();const link=document.createElement("a");link.href="/auth/login";link.textContent="Sign in";link.className="button primary";bar.append(link);
     document.querySelector("main").inert=true;return;
   }
+  initializeSeries(openAnalysis);
   initializeDashboard(openAnalysis).catch(error=>{document.getElementById("dashboardSave").textContent=`Dashboard unavailable: ${error.message}. Reload to retry.`;});
   const events=new EventSource("/api/changes");let refreshing=false,refreshAgain=false;
   async function refreshShared(){
@@ -77,7 +79,7 @@ export async function initializeCollaboration(){
       }while(refreshAgain);
     }finally{refreshing=false;}
   }
-  events.onmessage=event=>{window.dispatchEvent(new Event("dashboard-refresh"));const data=JSON.parse(event.data);if(data.analysisId===state.analysisId)refreshShared().catch(()=>{});if(dialog.open&&["catalog","renameAnalysis","archive","restore"].includes(data.change.kind))refresh().catch(report);};
+  events.onmessage=event=>{window.dispatchEvent(new Event("dashboard-refresh"));const data=JSON.parse(event.data);window.dispatchEvent(new CustomEvent("series-refresh",{detail:data}));if(data.analysisId&&data.analysisId===state.analysisId)refreshShared().catch(()=>{});if(dialog.open&&["catalog","renameAnalysis","archive","restore"].includes(data.change.kind))refresh().catch(report);};
   events.onopen=()=>{window.dispatchEvent(new Event("dashboard-refresh"));refreshShared().catch(()=>{});};
   window.addEventListener("shared-save-state",renderSaveStatus);
   const presence=document.createElement("span");presence.id="analysisPresence";bar.append(presence);

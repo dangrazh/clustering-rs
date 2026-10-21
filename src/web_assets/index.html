@@ -13,6 +13,7 @@
         <p id="sourceStatus">No source loaded</p>
       </div>
       <nav class="steps" aria-label="Workflow">
+        <button data-step="series">Series</button>
         <button data-step="dashboard" class="active">Dashboard</button>
         <button data-step="source">1 Source</button>
         <button data-step="mapping" disabled>2 Mapping</button>
@@ -24,6 +25,7 @@
 
     <main>
       <section id="dashboard" class="screen active"><div class="section-head"><h2>Dashboard</h2><span id="dashboardSave" class="job-metadata"></span></div><div id="dashboardGrid" class="dashboard-grid"></div></section>
+      <section id="series" class="screen"><div class="section-head"><h2>Cluster trends</h2></div><div id="seriesRoot"></div></section>
       <section id="source" class="screen">
         <div class="section-head">
           <h2>Source file</h2>
@@ -40,6 +42,7 @@
         </div>
         <div id="worksheetBar" class="toolbar hidden"></div>
         <div id="sourceStats" class="stats"></div>
+        <details><summary>Column data types</summary><div id="sourceColumnTypes"></div></details>
         <div id="previewTable" class="table-wrap"></div>
       </section>
 
@@ -55,6 +58,7 @@
             <button id="confirmMapping" class="primary">Confirm Field Mapping</button>
           </div>
         </div>
+        <details><summary>Column data types</summary><div id="mappingColumnTypes"></div></details>
         <div id="mappingForm" class="form-grid"></div>
         <h3>Additional text for similarity</h3>
         <div id="additionalText" class="check-list"></div>
@@ -88,7 +92,7 @@
         <div class="section-head">
           <h2>Results</h2>
           <div class="toolbar">
-            <button id="downloadSession">Save Session</button>
+            <button id="downloadSession">Save locally</button>
             <button id="exportClusterView">Export Cluster View</button>
             <button id="exportExcel" class="primary">Export Excel</button>
           </div>
@@ -97,7 +101,8 @@
         <details class="workflow-filters"><summary>Filter by workflow state</summary>
           <div id="workflowFilters"></div><button id="clearWorkflowFilter" type="button">Show all states</button>
         </details>
-        <div id="resultStats" class="stats"></div>
+        <div class="toolbar"><button id="editColumnTypes" type="button">Column data types</button><button id="clearAllFilters" type="button">Clear all Filters</button><label>Filter cluster/theme labels <input id="treeLabelFilter" type="search" placeholder="Text or * wildcard" maxlength="500"></label><span class="muted">Label search filters the tree only.</span></div>
+          <div id="resultStats" class="stats"></div>
         <div class="results-layout">
           <aside id="clusterList" class="cluster-list"></aside>
           <div id="resultsSplitter" class="resize-splitter" role="separator" aria-orientation="vertical" aria-label="Resize results panes"></div>
@@ -120,7 +125,8 @@
                 <button id="nextPage">Next</button>
               </div>
             </div>
-            <div id="detailTable" class="table-wrap results-table"></div>
+            <div id="detailScrollTop" class="detail-scroll-top" tabindex="0" role="region" aria-label="Scroll detail table horizontally" hidden><div></div></div>
+             <div id="detailTable" class="table-wrap results-table"></div>
           </section>
         </div>
       </section>

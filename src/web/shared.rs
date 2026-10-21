@@ -149,7 +149,9 @@ pub(super) fn handles(path: &str) -> bool {
     matches!(
         path,
         "/api/me" | "/api/users" | "/api/analyses" | "/api/changes" | "/api/jobs"
-    ) || path.starts_with("/api/dashboard/")
+    ) || path == "/api/series"
+        || path.starts_with("/api/series/")
+        || path.starts_with("/api/dashboard/")
         || path.starts_with("/api/analyses/")
         || path.starts_with("/api/jobs/")
             && (path.ends_with("/save-central")
@@ -175,7 +177,7 @@ pub(super) async fn prepare(request: &Request<Incoming>, state: &mut WebState) -
     }
     Ok(())
 }
-async fn body<T: serde::de::DeserializeOwned>(request: Request<Incoming>) -> Result<T> {
+pub(super) async fn body<T: serde::de::DeserializeOwned>(request: Request<Incoming>) -> Result<T> {
     let bytes = http_body_util::Limited::new(request.into_body(), 16 * 1024 * 1024)
         .collect()
         .await
@@ -199,6 +201,9 @@ pub(super) async fn route(
     let method = request.method().clone();
     let user = state.user.as_ref().context("Sign in required")?.clone();
     let store = &state.inner.store;
+    if path == "/api/series" || path.starts_with("/api/series/") {
+        return super::trends::route(request, state).await;
+    }
     if path.starts_with("/api/dashboard/") {
         if path == "/api/dashboard/preferences" {
             if method == Method::GET {
@@ -344,6 +349,7 @@ pub(super) async fn route(
                 let mut view = payload.view;
                 view.sanitize(&run);
                 meta.summaries = crate::storage::Store::entity_summaries(&run);
+                meta.column_types=run.column_types.clone();
                 let artifact = state
                     .inner
                     .artifacts
@@ -432,6 +438,11 @@ pub(super) async fn route(
         }
         (Method::POST, "commands") => {
             let cmd: Command = body(request).await?;
+            if cmd.action["type"]=="columnTypes" {
+                let info=store.analysis(aid).await?;let artifact=state.inner.artifacts.load(&info.artifact).await?;
+                let columns:Vec<crate::columns::ColumnType>=serde_json::from_value(cmd.action["columns"].clone())?;
+                anyhow::ensure!(columns.len()==artifact.run.source.headers.len(),"Column type count does not match analysis");
+            }
             match store.command(aid.into(), user.clone(), cmd).await {
                 Ok(outcome) => json_response(
                     StatusCode::OK,
@@ -499,11 +510,20 @@ pub(super) async fn route(
             excel_response(bytes, "cluster_view.xlsx")
         }
         (Method::POST, "pivot" | "pivot/export") => {
+            let streaming = operation == "pivot"
+                && request
+                    .headers()
+                    .get("accept")
+                    .is_some_and(|v| v == "application/x-ndjson");
             let payload: PivotRequest = body(request).await?;
             let info = store.analysis(aid).await?;
             let artifact = state.inner.artifacts.load(&info.artifact).await?;
+            let mut run=(*artifact.run).clone();run.column_types=store.column_types(aid,&run).await?;
+            if streaming {
+                return pivot_stream(Arc::new(run), payload);
+            }
             let pivot =
-                tokio::task::spawn_blocking(move || build_pivot_response(&artifact.run, payload))
+                tokio::task::spawn_blocking(move || build_pivot_response(&run, payload))
                     .await??;
             if operation == "pivot" {
                 json_response(StatusCode::OK, &pivot)
@@ -538,8 +558,12 @@ pub(super) async fn route(
 }
 fn portable(snapshot: &serde_json::Value) -> Result<PortableMeta> {
     let mut meta = PortableMeta::default();
+    if let Some(columns)=snapshot.get("columnTypes").filter(|v|!v.is_null()){meta.column_types=serde_json::from_value(columns.clone())?;}
     if let Some(reviewers) = snapshot["reviewers"].as_object() {
         for (key, value) in reviewers {
+            if value["value"].is_null() {
+                continue;
+            }
             meta.reviewers
                 .insert(key.clone(), serde_json::from_value(value["value"].clone())?);
         }

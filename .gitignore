@@ -8,6 +8,7 @@ target/
 target-codex-tests/
 data/
 node_modules/
+Test_data/
 NuGet.Config
 *.txt
 Tests/
@@ -18,6 +19,10 @@ Tests/
 !documentation/dashboard-reviewer-requirements-20260916.md
 !documentation/dashboard-reviewer-implementation-plan-20260916.md
 !documentation/dashboard-reviewer-implementation-status-20260916.md
+!documentation/cluster-trends-requirements-20260917.md
+!documentation/cluster-trends-implementation-plan-20260917.md
+!documentation/cluster-trends-operations-20260918.md
+!documentation/cluster-trends-implementation-status-20260918.md
 !src/auth_fixtures/README.md
 *.example.json
 /tests

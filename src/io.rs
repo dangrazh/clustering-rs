@@ -254,7 +254,7 @@ fn cell_to_string(cell: &Data) -> String {
         Data::Float(value) => value.to_string(),
         Data::Int(value) => value.to_string(),
         Data::Bool(value) => value.to_string(),
-        Data::DateTime(value) => value.to_string(),
+        Data::DateTime(value) => value.as_datetime().map(|v|v.format("%Y-%m-%d %H:%M:%S%.f").to_string()).unwrap_or_else(||value.to_string()),
         Data::DateTimeIso(value) => value.clone(),
         Data::DurationIso(value) => value.clone(),
         Data::Error(value) => value.to_string(),

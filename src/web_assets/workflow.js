@@ -41,6 +41,11 @@ export function workflowRows(run, review, statuses) {
 export function applyReviewResponse(payload) {
   if(payload.analysis && payload.analysis.id!==state.analysisId)return;
   if(payload.analysis && state.shared && payload.analysis.id===state.shared.analysis.id && payload.sharedRevision<state.shared.sharedRevision)return;
+  if(state.analysis&&payload.columnTypes){
+    const old=state.analysis.column_types||[];
+    payload.columnTypes.forEach((type,i)=>{if(JSON.stringify(type)!==JSON.stringify(old[i])){state.detailColumnFilters[i]={selected:null,query:""};(state.dateFilterModes||=[])[i]="exact";}});
+    state.analysis.column_types=payload.columnTypes;
+  }
   state.review = payload.review;
   state.allowedActions = payload.allowedActions || {};
   state.shared = payload.analysis ? payload : null;
@@ -237,7 +242,7 @@ export function renderWorkflow(onChange) {
     document.getElementById("closeWorkflow").disabled = true;
     const controls = [...panel.querySelectorAll("button")]; controls.forEach(button => { button.disabled = true; });
     try {
-      applyReviewResponse(await mutateReview(state.jobId, { revision: state.review.annotations.revision, target: action.type==="reviewer"?key.split(":")[0]:key, actor, action,base }));
+      applyReviewResponse(await mutateReview(state.jobId, { revision: state.review.annotations.revision, target: key, actor, action,base }));
       onChange();
     } catch (e) {
       if (e.snapshot) {conflict=e.snapshot;applyReviewResponse(e.snapshot);}
@@ -287,13 +292,14 @@ export function renderWorkflow(onChange) {
   }
   if(state.commentAccess)panel.querySelectorAll("[data-edit],[data-delete]").forEach(button=>{if(!state.commentAccess[button.dataset.edit||button.dataset.delete]?.canEdit)button.remove();});
   if(state.shared){
-    const parent=key.split(":")[0],reviewer=state.shared.reviewers[parent]?.value;
+    const parent=key.split(":")[0],ownReviewer=state.shared.reviewers[key]?.value,reviewer=ownReviewer||state.shared.reviewers[parent]?.value;
     const container=document.createElement("div");container.className="workflow-actions reviewer-assignment";
-    const label=document.createElement("label");label.textContent="Cluster reviewer ";const select=document.createElement("select");label.append(select);
+    const label=document.createElement("label");label.textContent=key.includes(":")?"Theme reviewer ":"Cluster reviewer ";const select=document.createElement("select");label.append(select);
     select.add(new Option("Unassigned",""));for(const user of state.users||[])select.add(new Option(user.name,user.id));select.value=reviewer?.userId||"";
     const assign=document.createElement("button");assign.type="button";assign.textContent="Assign";assign.onclick=()=>mutate({type:"reviewer",userId:select.value||null});
     const claim=document.createElement("button");claim.type="button";claim.textContent="Claim";claim.onclick=()=>mutate({type:"reviewer",userId:state.user.id});
     container.append(label,assign,claim);
+    if(key.includes(":")){const inherit=document.createElement("button");inherit.type="button";inherit.textContent=ownReviewer?"Inherit cluster reviewer":"Inheriting cluster reviewer";inherit.disabled=!ownReviewer;inherit.onclick=()=>mutate({type:"reviewer",inherit:true});container.append(inherit);}
     if(reviewer?.unconfirmed){const note=document.createElement("span");note.textContent=`Imported reviewer: ${reviewer.recorded?.name||"unknown"} (unconfirmed)`;container.append(note);}
     panel.querySelector("h3").after(container);
     panel.querySelectorAll("[data-edit],[data-delete]").forEach(button=>{if(!state.shared.commentAccess[button.dataset.edit||button.dataset.delete]?.canEdit)button.remove();});

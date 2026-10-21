@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) async fn migrate(c: &Connection) -> Result<()> {
-    if scalar(c, "SELECT version FROM schema_version").await? == 2 {
+    if scalar(c, "SELECT version FROM schema_version").await? >= 2 {
         return Ok(());
     }
     execute(c, "BEGIN").await?;
@@ -74,6 +74,17 @@ impl Store {
             execute(&c, "BEGIN").await?;
             let result = async {
                 insert_summaries(&c, &aid, &values).await?;
+                let workflow = serde_json::to_string(&Some(crate::workflow::Workflow::default()))?;
+                c.execute(
+                    "INSERT OR IGNORE INTO entities(analysis,entity,workflow) VALUES(?,'0',?)",
+                    params![aid.clone(), workflow],
+                )
+                .await?;
+                c.execute(
+                    "INSERT OR IGNORE INTO reviewers(analysis,entity,value) VALUES(?,'0',?)",
+                    params![aid.clone(), serde_json::to_string(&Reviewer::default())?],
+                )
+                .await?;
                 c.execute(
                     "INSERT OR IGNORE INTO dashboard_ready VALUES(?)",
                     [aid.as_str()],
@@ -171,13 +182,13 @@ impl Store {
         while let Some(r) = rows.next().await? {
             analyses.push(json!({"id":r.get::<String>(0)?,"name":r.get::<String>(1)?,"created":r.get::<i64>(2)?,"archived":r.get::<i64>(3)?!=0,"owner":{"id":r.get::<String>(4)?,"name":r.get::<String>(5)?}}));
         }
-        let mut rows=c.query("SELECT d.analysis,d.entity,d.parent,COALESCE(e.label,d.label),d.incidents,e.workflow,p.workflow FROM dashboard_entities d JOIN reviewers r ON r.analysis=d.analysis AND r.entity=d.parent JOIN entities e ON e.analysis=d.analysis AND e.entity=d.entity JOIN entities p ON p.analysis=d.analysis AND p.entity=d.parent WHERE r.user_id=? ORDER BY d.analysis,CAST(d.parent AS INTEGER),d.entity LIMIT 501 OFFSET ?",params![user.id.clone(),offset]).await?;
+        let mut rows=c.query("SELECT d.analysis,d.entity,d.parent,COALESCE(e.label,d.label),d.incidents,e.workflow,p.workflow,COALESCE(p.label,pd.label),pd.incidents FROM dashboard_entities d JOIN dashboard_entities pd ON pd.analysis=d.analysis AND pd.entity=d.parent LEFT JOIN reviewers own ON own.analysis=d.analysis AND own.entity=d.entity LEFT JOIN reviewers r ON r.analysis=d.analysis AND r.entity=d.parent JOIN entities e ON e.analysis=d.analysis AND e.entity=d.entity JOIN entities p ON p.analysis=d.analysis AND p.entity=d.parent WHERE CASE WHEN own.value IS NOT NULL AND own.value<>'null' THEN own.user_id ELSE r.user_id END=? ORDER BY d.analysis,CAST(d.parent AS INTEGER),d.entity LIMIT 501 OFFSET ?",params![user.id.clone(),offset]).await?;
         let mut assigned = vec![];
         while let Some(r) = rows.next().await? {
             let own: Option<Workflow> = serde_json::from_str(&r.get::<String>(5)?)?;
             let parent: Option<Workflow> = serde_json::from_str(&r.get::<String>(6)?)?;
             let workflow = own.or(parent).unwrap_or_default();
-            assigned.push(json!({"analysisId":r.get::<String>(0)?,"entity":r.get::<String>(1)?,"parent":r.get::<String>(2)?,"label":r.get::<String>(3)?,"incidents":r.get::<i64>(4)?,"status":workflow.status}));
+            assigned.push(json!({"analysisId":r.get::<String>(0)?,"entity":r.get::<String>(1)?,"parent":r.get::<String>(2)?,"label":r.get::<String>(3)?,"incidents":r.get::<i64>(4)?,"status":workflow.status,"parentLabel":r.get::<String>(7)?,"parentIncidents":r.get::<i64>(8)?}));
         }
         let more = analyses.len() > 500 || assigned.len() > 500;
         analyses.truncate(500);

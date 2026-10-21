@@ -1,3 +1,4 @@
+import {renderColumnTypes} from "./columns.js";
 import { importSource, loadWorksheet } from "./api.js";
 import { renderMapping } from "./mapping.js";
 import { loadSavedSession } from "./results.js";
@@ -97,6 +98,7 @@ function renderSource() {
   });
 
   renderTable("previewTable", source.headers, source.previewRows);
+  renderColumnTypes(document.getElementById("sourceColumnTypes"),source.headers,source.columnTypes,renderMapping);
 }
 
 async function selectWorksheet(sheet) {

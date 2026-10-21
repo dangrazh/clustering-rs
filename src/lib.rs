@@ -20,6 +20,9 @@ pub mod schema;
 pub mod session;
 pub mod storage;
 pub mod text;
+pub mod trends;
 pub mod web;
 pub mod worker;
 pub mod workflow;
+
+pub mod columns;

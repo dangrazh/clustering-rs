@@ -19,10 +19,10 @@ try {
     }else await page.goto(process.env.FIXTURE_URL);
     await expect(page.locator("#signedInUser")).toHaveText(name);
     await expect(page.locator("#dashboard")).toBeVisible();
-    await expect(page.locator(".dashboard-panel")).toHaveCount(4);
+    await expect(page.locator("#dashboard .dashboard-panel")).toHaveCount(4);
     await expect(page.locator("#dashboard-all-title")).toBeVisible();
     await expect(page.locator("#dashboardGrid .dashboard-error").filter({hasText:"Unable"})).toHaveCount(0);
-    await expect(page.locator(".dashboard-panel").first()).toHaveCSS("background-color",await page.locator(".topbar").evaluate(e=>getComputedStyle(e).backgroundColor));
+    await expect(page.locator("#dashboard .dashboard-panel").first()).toHaveCSS("background-color",await page.locator(".topbar").evaluate(e=>getComputedStyle(e).backgroundColor));
     await page.screenshot({path:`target/ui-theme/dashboard-${mode}.png`});
     await page.getByRole("button",{name:"Analyses",exact:true}).click();
     await expect(page.locator("#analysisLibrary").getByRole("button",{name:"Browser acceptance",exact:true})).toBeVisible();
@@ -39,10 +39,30 @@ try {
     expect(geometry.clusterList.width).toBeGreaterThan(150);
     expect(geometry.detailTable.width).toBeGreaterThan(150);
     expect(geometry.detailTable.height).toBeGreaterThan(150);
+    await expect(page.locator('#clusterList')).toContainText('Unclustered');
+    await page.getByRole('searchbox',{name:'Filter cluster/theme labels'}).fill('NETWORK*CONNECTION');
+    await expect(page.locator('#clusterList .theme-row')).toHaveCount(2);
+    await page.getByRole('searchbox',{name:'Filter cluster/theme labels'}).fill('missing-label');
+    await expect(page.locator('#clusterList')).toContainText('No clusters match');
+    await page.getByRole('button',{name:'Clear all Filters',exact:true}).click();
+    await expect(page.locator('#clusterList .tree-row')).toHaveCount(3);
+    await page.setViewportSize({width:800,height:800});
+    await expect(page.locator('#detailScrollTop')).toBeVisible();
+    await page.locator('#detailScrollTop').evaluate(e=>e.scrollLeft=100);
+    await expect.poll(()=>page.locator('#detailTable').evaluate(e=>e.scrollLeft)).toBeGreaterThan(0);
+    await page.locator('#detailTable').evaluate(e=>e.scrollLeft=0);
+    await expect.poll(()=>page.locator('#detailScrollTop').evaluate(e=>e.scrollLeft)).toBe(0);
+    await page.setViewportSize({width:1280,height:900});
     await page.screenshot({path:`target/ui-theme/results-layout-${mode}.png`});
     return page;
   }
   const alice=await page(process.env.FIXTURE_ALICE,"Alice"),bob=await page(process.env.FIXTURE_BOB,"Bob");
+  await alice.locator('#clusterList .tree-toggle').first().click();
+  await alice.locator('[data-workflow-key="1:1"]').click();await alice.getByRole('button',{name:'Claim',exact:true}).click();
+  await expect(alice.locator('#workflowPanel .reviewer-assignment')).toContainText('Theme reviewer');
+  await expect.poll(()=>bob.evaluate(async()=>{const {state}=await import('/state.js');return state.shared.reviewers['1:1']?.value?.recorded?.name;})).toBe('Alice');
+  await expect.poll(()=>bob.evaluate(async()=>{const {state}=await import('/state.js');return state.shared.reviewers['1']?.value?.userId;})).toBe(null);
+  await alice.getByRole('button',{name:'Inherit cluster reviewer',exact:true}).click();await alice.locator('#closeWorkflow').click();
   for(const p of [alice,bob]){await p.locator('[data-workflow-key="1"]').click();await p.locator("#editLabel").click();}
   await alice.locator('#labelForm input').fill("Alice's label");await bob.locator('#labelForm input').fill("Bob's retained draft");
   await alice.locator('#labelForm button').first().click();

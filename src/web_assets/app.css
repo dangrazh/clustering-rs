@@ -1054,3 +1054,51 @@ footer {
 
 .dashboard-panel :focus-visible, .reviewer-filter :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .dashboard-controls input[type=checkbox], .reviewer-choices input { accent-color:var(--accent); }
+
+/* Series controls inherit application typography and system color variables. */
+#seriesRoot > div { margin-bottom: 14px; }
+.series-catalog, .series-legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.series-dialog { width: min(850px, 94vw); }
+.series-dialog-body { max-height: 65vh; overflow: auto; }
+.series-dialog-body .field { margin: 10px 0; }
+.series-dialog select[multiple] { min-height: 120px; }
+.series-impact li { margin-bottom: 10px; }
+.series-table-wrap { max-height: 55vh; overflow: auto; margin-top: 12px; }
+.series-table-wrap td, .series-table-wrap th { min-width: 170px; vertical-align: top; }
+.series-table-wrap td:first-child { min-width: 220px; }
+.series-table-wrap td small { display: block; color: var(--muted); margin: 5px 0; }
+.series-table-wrap td button { margin: 3px; }
+.series-review-row { display: grid; gap: 6px; border-bottom: 1px solid var(--line); padding: 12px 0; }
+.series-chart { width: 100%; max-height: 300px; color: var(--ink); background: var(--panel); }
+.series-chart text { fill: var(--muted); font: inherit; font-size: 12px; }
+.series-axis { stroke: var(--muted); fill: none; }
+.series-line { stroke: currentColor; stroke-width: 2; }
+circle.series-line { fill: currentColor; }
+.series-color-0 { color: var(--accent); }
+.series-color-1 { color: var(--ink); }
+.series-color-2 { color: var(--danger); }
+.series-color-3 { color: var(--muted); }
+.series-color-4 { color: var(--accent-dark); }
+.series-color-5 { color: var(--ink); }
+.series-key { border-bottom: 2px solid currentColor; }
+#series details { margin: 12px 0; }
+#series .toolbar { flex-wrap: wrap; }
+@media (max-width: 720px) { #series .section-head { align-items: stretch; flex-direction: column; gap: 10px; } }
+
+#series .field, .series-dialog .field { display: grid; gap: 6px; }
+#series input[type="checkbox"] { accent-color: var(--accent); }
+#series :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.series-start { margin-bottom: 16px; }
+.series-start p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.series-guide-steps { padding-left: 24px; }
+.series-guide-steps li { padding-left: 4px; margin: 14px 0; }
+.series-guide-steps p { margin: 5px 0; }
+.series-next-step { border-left: 3px solid var(--accent); background: var(--panel); padding: 10px 12px; font-size: 13px; }
+
+.detail-scroll-top { overflow-x:auto; overflow-y:hidden; min-height:18px; scrollbar-color:auto; }
+.detail-scroll-top > div { height:1px; }
+
+.column-types-grid { display:grid; gap:12px; }
+.column-type-row { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
+.column-type-row label { display:flex; flex-direction:column; flex:1; min-width:180px; }

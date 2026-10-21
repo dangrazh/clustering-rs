@@ -1,5 +1,6 @@
+import {filterValue,editColumnTypes} from "./columns.js";
 import { reviewerRows, reviewerLabel, bindReviewerFilter } from "./reviewers.js";
-import { captureView, restoreView } from "./view-state.js";
+import { captureView, restoreView, labelMatches, clearResultsFilters } from "./view-state.js";
 import { bindWorkflow, openWorkflow, renderWorkflow, renderSaveStatus, applyReviewResponse, effectiveWorkflow, selectionKey, statusLabels, stateMatches, workflowRows, displayLabel } from "./workflow.js";
 import { exportClusterViewExcel, exportExcel, exportPivotExcel, fetchPivot, fetchResult, restoreSession, fetchReview, saveSession } from "./api.js";
 import { state } from "./state.js";
@@ -7,6 +8,14 @@ import { hideOverlay, setStatus, showBusy, showError, showStep, statsHtml } from
 import { clusterId, clusterKey, escapeHtml, sameSelection } from "./utils.js";
 
 export function bindResultsEvents() {
+  document.getElementById("editColumnTypes").onclick=()=>editColumnTypes(snapshot=>{applyReviewResponse(snapshot);renderResults();});
+  document.getElementById("clearAllFilters").onclick=()=>{clearResultsFilters(state);renderResults();};
+  document.getElementById("treeLabelFilter").oninput=e=>{state.treeLabelFilter=e.target.value;renderClusterList();};
+  const top=document.getElementById("detailScrollTop"),table=document.getElementById("detailTable");
+  top.onscroll=()=>{if(table.scrollLeft!==top.scrollLeft)table.scrollLeft=top.scrollLeft;};
+  table.onscroll=()=>{if(top.scrollLeft!==table.scrollLeft)top.scrollLeft=table.scrollLeft;};
+  const resize=new ResizeObserver(()=>syncDetailScrollbar());resize.observe(table);
+  window.addEventListener("resize",syncDetailScrollbar);
   bindReviewerFilter(() => renderResults());
   bindWorkflow(() => renderResults());
   async function saving(title, action) {
@@ -164,7 +173,7 @@ export function renderResults(preserveEditor = false) {
   const run = state.analysis;
   applyResultsPaneWidth();
   document.getElementById("resultStats").innerHTML = statsHtml([
-    ["Clusters", run.clusters.length],
+    ["Clusters", run.clusters.filter(c=>c.id!==0).length],
     ["Processed", run.processed_incidents.length],
     ["Ignored", run.ignored_rows.length],
     ["Unclustered", run.unclustered_row_indices.length],
@@ -175,7 +184,13 @@ export function renderResults(preserveEditor = false) {
   if (!preserveEditor) renderWorkflow(() => renderResults());
 }
 
+function syncDetailScrollbar(){
+  const table=document.getElementById("detailTable"),top=document.getElementById("detailScrollTop");
+  if(!table||!top)return;top.firstElementChild.style.width=`${table.scrollWidth}px`;
+  top.hidden=table.scrollWidth<=table.clientWidth;top.scrollLeft=table.scrollLeft;
+}
 function renderClusterList() {
+  document.getElementById("treeLabelFilter").value=state.treeLabelFilter||"";
   const list = document.getElementById("clusterList");
   const visibleRows = treeVisibleRows();
   list.innerHTML = "";
@@ -183,8 +198,12 @@ function renderClusterList() {
   state.analysis.clusters.forEach((cluster) => {
     const clusterCount = filteredIncidentCount(cluster.incident_row_indices, visibleRows);
     if (visibleRows && clusterCount === 0) return;
+    const query=state.treeLabelFilter||"";
+    const parentMatches=labelMatches(displayLabel(state.review,String(cluster.id),cluster.label),query);
+    const themeMatches=theme=>labelMatches(displayLabel(state.review,`${cluster.id}:${theme.id}`,theme.label),query);
+    if(!parentMatches&&!cluster.subgroups.some(themeMatches))return;
     const key = clusterKey(cluster.id);
-    const expanded = state.expandedClusters.has(key);
+    const expanded = state.expandedClusters.has(key)||!!query;
     const row = document.createElement("div");
     row.className = "tree-row";
 
@@ -219,6 +238,7 @@ function renderClusterList() {
 
     if (expanded) {
       cluster.subgroups.forEach((theme) => {
+        if(!parentMatches&&!themeMatches(theme))return;
         if (!stateMatches(state.review, `${cluster.id}:${theme.id}`, state.workflowStates)) return;
         const themeCount = filteredIncidentCount(theme.incident_row_indices, visibleRows);
         if (visibleRows && themeCount === 0) return;
@@ -232,7 +252,7 @@ function renderClusterList() {
           "theme"
         );
         themeRow.appendChild(workflowBadge(themeSelection));
-        themeRow.appendChild(reviewerLabel(cluster.id));
+        themeRow.appendChild(reviewerLabel(`${cluster.id}:${theme.id}`));
         list.appendChild(themeRow);
       });
     }
@@ -312,6 +332,7 @@ function renderDetailRows(focusFilterColumn = null, focusTarget = "search") {
   const pageRows = rowIndices.slice(start, start + pageSize);
   const rows = pageRows.map((index) => run.source.rows[index]).filter(Boolean);
   renderResultsTable("detailTable", run.source.headers, rows);
+  requestAnimationFrame(syncDetailScrollbar);
   if (focusFilterColumn != null) restoreFilterFocus(focusFilterColumn, focusTarget);
   renderPagination(totalRows, start, rows.length, totalPages);
   renderDrilldownState();
@@ -354,7 +375,7 @@ function applyDetailFilters(rowIndices, rows) {
   if (!filters.length) return rowIndices;
   return rowIndices.filter((rowIndex) => {
     const row = rows[rowIndex] || [];
-    return filters.every(({ column, selectedValues }) => selectedValues.has(detailCellValue(row[column])));
+    return filters.every(({ column, selectedValues }) => selectedValues.has(columnFilterValue(row[column],column)));
   });
 }
 
@@ -518,7 +539,9 @@ function renderPivotBucketItems(columns, headers, area) {
     .join("");
 }
 
+let pivotController=null;
 async function renderPivotTable() {
+  pivotController?.abort();pivotController=new AbortController();
   const rowIndices = visibleDetailRowIndices();
   const requestId = ++state.pivotRequestId;
   document.getElementById("pivotStatus").textContent = `${rowIndices.length} records summarized`;
@@ -529,15 +552,20 @@ async function renderPivotTable() {
   }
 
   target.innerHTML = `<div class="pivot-placeholder">Calculating pivot...</div>`;
+  const started=performance.now();let latest={phase:"Starting calculation",completed:0,total:0};
+  const progressTimer=setInterval(()=>{if(requestId!==state.pivotRequestId||performance.now()-started<5000)return;
+    const elapsed=Math.floor((performance.now()-started)/1000),count=latest.total?` — ${latest.completed.toLocaleString()} of ${latest.total.toLocaleString()} (${Math.floor(latest.completed/latest.total*100)}%)`:"";
+    document.getElementById("pivotStatus").textContent=`${latest.phase}${count} · ${elapsed}s elapsed`;
+  },250);
   try {
-    const pivot = await fetchPivot(state.jobId, rowIndices, state.pivotRows, state.pivotColumns);
+    const pivot = await fetchPivot(state.jobId, rowIndices, state.pivotRows, state.pivotColumns,p=>latest=p,pivotController.signal);
     if (requestId !== state.pivotRequestId) return;
     document.getElementById("pivotStatus").textContent = `${pivot.recordCount} records summarized`;
     renderPivotResponse(target, pivot);
   } catch (error) {
     if (requestId !== state.pivotRequestId) return;
     target.innerHTML = `<div class="pivot-placeholder">Pivot failed: ${escapeHtml(error.message)}</div>`;
-  }
+  } finally {clearInterval(progressTimer);}
 }
 
 function renderPivotResponse(target, pivot) {
@@ -620,6 +648,7 @@ function applyPivotCellFilters(pivot, rowIndex, tableColumn) {
   const filters = pivotCellFilters(pivot, rowIndex, tableColumn);
   syncDetailColumnState(state.analysis.source.headers.length);
   filters.forEach(({ column, selected }) => {
+    (state.dateFilterModes||=[])[column]="exact";
     state.detailColumnFilters[column] = {
       selected: selected.map(detailCellValue).sort(compareDetailValues),
       query: "",
@@ -788,6 +817,7 @@ function renderDetailFilterMenu(column, header) {
     visibleValues.length > 0 && visibleValues.every((value) => !selectedValues || selectedValues.has(value));
 
   return `<div class="column-filter-menu" data-column="${column}" role="dialog" aria-label="Filter ${escapeHtml(header)}">
+    ${state.analysis.column_types?.[column]?.dataType==="Date/Time"?`<label>Filter date/time by <select class="date-filter-mode" data-column="${column}" aria-label="Date filter mode">${[["exact","Exact value"],["date","Date only"],["month","Month only (year-month)"]].map(([value,label])=>`<option value="${value}" ${(state.dateFilterModes?.[column]||"exact")===value?"selected":""}>${label}</option>`).join("")}</select></label>`:""}
     <input class="column-filter-search" data-column="${column}" type="search" value="${escapeHtml(
     query
   )}" placeholder="Search values" aria-label="Search ${escapeHtml(header)} values" />
@@ -826,13 +856,14 @@ function detailFilterLabel(value) {
   return value === "" ? "(blank)" : value;
 }
 
+function columnFilterValue(value,column){return filterValue(detailCellValue(value),state.analysis?.column_types?.[column],state.dateFilterModes?.[column]||"exact");}
 function detailFilterValues(column) {
   const run = state.analysis;
   if (!run) return [];
   const rows = run.source.rows;
   const rowIndices = applyDetailFiltersExcept(detailRowIndices(), rows, column);
   const values = new Set();
-  rowIndices.forEach((rowIndex) => values.add(detailCellValue(rows[rowIndex]?.[column])));
+  rowIndices.forEach((rowIndex) => values.add(columnFilterValue(rows[rowIndex]?.[column],column)));
   return [...values].sort(compareDetailValues);
 }
 
@@ -843,7 +874,7 @@ function applyDetailFiltersExcept(rowIndices, rows, ignoredColumn) {
   if (!filters.length) return rowIndices;
   return rowIndices.filter((rowIndex) => {
     const row = rows[rowIndex] || [];
-    return filters.every(({ column, selectedValues }) => selectedValues.has(detailCellValue(row[column])));
+    return filters.every(({ column, selectedValues }) => selectedValues.has(columnFilterValue(row[column],column)));
   });
 }
 
@@ -912,6 +943,7 @@ function bindColumnResizers(target) {
         const width = Math.max(80, startWidth + moveEvent.clientX - startX);
         state.detailColumnWidths[column] = width;
         if (col) col.style.width = `${width}px`;
+        requestAnimationFrame(syncDetailScrollbar);
       };
 
       const onUp = () => {
@@ -927,6 +959,7 @@ function bindColumnResizers(target) {
 }
 
 function bindColumnControls(target) {
+  target.querySelectorAll(".date-filter-mode").forEach(select=>select.onchange=()=>{const column=Number(select.dataset.column);(state.dateFilterModes||=[])[column]=select.value;state.detailColumnFilters[column]={selected:null,query:"",searchDeselected:false};state.detailPage=1;renderClusterList();renderDetailRows(column);});
   target.querySelectorAll(".column-sort").forEach((button) => {
     button.addEventListener("mousedown", (event) => event.stopPropagation());
     button.addEventListener("click", (event) => {

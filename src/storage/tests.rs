@@ -554,6 +554,11 @@ async fn version_one_dashboard_migration_indexes_only_confirmed_reviewers() -> R
         )
         .await?;
         c.execute("INSERT INTO analyses VALUES('analysis','Legacy','legacy','unread.icas','fingerprint','a',0,0,1)",()).await?;
+        c.execute(
+            "INSERT INTO deliveries VALUES(42,'legacy-event','analysis','{\"kind\":\"catalog\"}')",
+            (),
+        )
+        .await?;
         for (entity, unconfirmed) in [("1", false), ("2", true)] {
             c.execute(
                 "INSERT INTO reviewers VALUES('analysis',?,?,0)",
@@ -567,7 +572,11 @@ async fn version_one_dashboard_migration_indexes_only_confirmed_reviewers() -> R
     }
     let s = Store::open(dir.path(), 4).await?;
     let c = s.connect().await?;
-    assert_eq!(scalar(&c, "SELECT version FROM schema_version").await?, 2);
+    assert_eq!(scalar(&c, "SELECT version FROM schema_version").await?, 5);
+    assert_eq!(s.delivery_cursor().await?, 42);
+    let events = s.events(41).await?;
+    assert_eq!(events[0]["analysisId"], "analysis");
+    assert_eq!(events[0]["resourceKind"], "analysis");
     assert_eq!(
         scalar(&c, "SELECT COUNT(*) FROM reviewers WHERE user_id='a'").await?,
         1
@@ -707,6 +716,57 @@ async fn dashboard_backfill_resumes_and_keeps_completed_analyses() -> Result<()>
         scalar(&c, "SELECT COUNT(*) FROM dashboard_entities").await?,
         count
     );
-    assert_eq!(count as usize, Store::entity_summaries(&run).len() * 2);
+    assert_eq!(count as usize, Store::entity_summaries(&run).len() * 2 + 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn theme_reviewers_override_inherit_and_conflict_independently() -> Result<()> {
+    let (_dir, s, alice, bob, aid) = fixture().await?;
+    s.command(
+        aid.clone(),
+        alice.clone(),
+        command("1", json!({"type":"reviewer","userId":alice.id}), 0),
+    )
+    .await?;
+    s.command(
+        aid.clone(),
+        alice.clone(),
+        command("1:1", json!({"type":"reviewer","userId":bob.id}), 0),
+    )
+    .await?;
+    s.command(
+        aid.clone(),
+        alice.clone(),
+        command("1", json!({"type":"reviewer","userId":null}), 1),
+    )
+    .await?;
+    let snapshot = s.review(&aid, &alice).await?;
+    assert_eq!(snapshot["reviewers"]["1:1"]["value"]["userId"], bob.id);
+    assert!(snapshot["reviewers"]["1"]["value"]["userId"].is_null());
+    assert!(s
+        .command(
+            aid.clone(),
+            alice.clone(),
+            command("1:1", json!({"type":"reviewer","userId":alice.id}), 0)
+        )
+        .await
+        .is_err());
+    s.command(
+        aid.clone(),
+        alice.clone(),
+        command("1:1", json!({"type":"reviewer","inherit":true}), 1),
+    )
+    .await?;
+    let snapshot = s.review(&aid, &alice).await?;
+    assert!(snapshot["reviewers"]["1:1"]["value"].is_null());
+    assert_eq!(snapshot["reviewers"]["1:1"]["version"], 2);
+    s.command(
+        aid.clone(),
+        alice.clone(),
+        command("1:1", json!({"type":"reviewer","userId":null}), 2),
+    )
+    .await?;
+    assert!(s.review(&aid, &alice).await?["reviewers"]["1:1"]["value"].is_object());
     Ok(())
 }

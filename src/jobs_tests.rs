@@ -5,6 +5,7 @@ fn input() -> Input {
     let mut run = fixtures::run(12);
     run.source.source_path = Some("incident-export.xlsx".into());
     Input {
+        column_types: vec![],
         source: run.source,
         mapping: run.mapping,
         settings: run.settings,

@@ -45,6 +45,8 @@ pub struct ViewState {
     pub detail_drilldown_label: String,
     pub workflow_states: Vec<ReviewStatus>,
     pub reviewer_filter: ReviewerFilter,
+    pub tree_label_filter: String,
+    pub date_filter_modes: Vec<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Selection {
@@ -88,6 +90,8 @@ impl From<LegacyViewState> for ViewState {
             detail_drilldown_label: v.detail_drilldown_label,
             workflow_states: v.workflow_states,
             reviewer_filter: ReviewerFilter::default(),
+            tree_label_filter: String::new(),
+            date_filter_modes: vec![],
         }
     }
 }
@@ -113,9 +117,19 @@ struct SessionV4<'a> {
     filter: ReviewerFilter,
 }
 
+#[derive(Serialize, Deserialize)]
+struct SessionV5<'a> {
+    session: SessionV4<'a>,
+    tree_label_filter: String,
+}
+#[derive(Serialize,Deserialize)]
+struct SessionV6<'a>{session:SessionV5<'a>,column_types:Vec<crate::columns::ColumnType>,date_filter_modes:Vec<String>}
 impl ViewState {
     pub fn sanitize(&mut self, run: &AnalysisRun) {
-        self.version = 2;
+        self.tree_label_filter = self.tree_label_filter.chars().take(500).collect();
+        self.date_filter_modes.truncate(run.source.headers.len());
+        for mode in &mut self.date_filter_modes {if !matches!(mode.as_str(),"exact"|"date"|"month"){*mode="exact".into();}}
+        self.version = 4;
         self.reviewer_filter.users.retain(|id| id.len() <= 200);
         self.reviewer_filter.users.sort();
         self.reviewer_filter.users.dedup();
@@ -335,6 +349,7 @@ impl<'a> RunWire<'a> {
             clusters: run
                 .clusters
                 .iter()
+                .filter(|c| c.id.0 != 0)
                 .map(|c| ClusterWire {
                     id: c.id.0 as u64,
                     label: Cow::Borrowed(&c.label),
@@ -356,6 +371,7 @@ impl<'a> RunWire<'a> {
     fn into_run(self) -> Result<AnalysisRun> {
         let m = self.mapping;
         Ok(AnalysisRun {
+        column_types: vec![],
             source: self.source.into_owned(),
             settings: self.settings.into_owned(),
             timings: self.timings.into_owned(),
@@ -523,7 +539,7 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8], kind: u8) -> Result<T> {
     );
     ensure!(bytes.len() <= MAX_FILE_BYTES, "File is too large.");
     ensure!(
-        matches!(u16::from_le_bytes([bytes[8], bytes[9]]), 1..=4) && bytes[11] == 1,
+        matches!(u16::from_le_bytes([bytes[8], bytes[9]]), 1..=6) && bytes[11] == 1,
         "Unsupported session version or codec."
     );
     ensure!(
@@ -576,8 +592,13 @@ pub fn encode_session_level(
         },
         filter: view.reviewer_filter.clone(),
     };
+    let wire = SessionV5 {
+        session: wire,
+        tree_label_filter: view.tree_label_filter.clone(),
+    };
+    let wire=SessionV6{session:wire,column_types:run.column_types.clone(),date_filter_modes:view.date_filter_modes.clone()};
     let mut bytes = encode(1, &wire, level)?;
-    bytes[8..10].copy_from_slice(&4u16.to_le_bytes());
+    bytes[8..10].copy_from_slice(&6u16.to_le_bytes());
     Ok(bytes)
 }
 fn validate_text_fields(run: &AnalysisRun) -> Result<()> {
@@ -603,58 +624,78 @@ fn validate_text_fields(run: &AnalysisRun) -> Result<()> {
 }
 pub fn decode_session(bytes: &[u8]) -> Result<LoadedSession> {
     let mut metadata = crate::storage::PortableMeta::default();
-    let (run, review, mut view): (_, _, ViewState) = if bytes.get(8..10) == Some(&[4, 0]) {
-        let wire: SessionV4<'_> = decode(bytes, 1)?;
-        metadata.reviewers = wire.session.reviewers;
-        metadata.audit = wire
-            .session
-            .audit
-            .iter()
-            .map(|v| serde_json::from_str(v))
-            .collect::<std::result::Result<_, _>>()?;
-        let mut view: ViewState = wire.session.session.view.into_owned().into();
-        view.reviewer_filter = wire.filter;
-        (
-            wire.session.session.run.into_run()?,
-            wire.session.session.review.into_owned(),
-            view,
-        )
-    } else if bytes.get(8..10) == Some(&[3, 0]) {
-        let wire: SessionV3<'_> = decode(bytes, 1)?;
-        metadata.reviewers = wire.reviewers;
-        metadata.audit = wire
-            .audit
-            .iter()
-            .map(|v| serde_json::from_str(v))
-            .collect::<std::result::Result<_, _>>()?;
-        (
-            wire.session.run.into_run()?,
-            wire.session.review.into_owned(),
-            wire.session.view.into_owned().into(),
-        )
-    } else if bytes.get(8..10) == Some(&[1, 0]) {
-        let wire: SessionV1<'_> = decode(bytes, 1)?;
-        (
-            wire.run.into_run()?,
-            ReviewData::from(wire.review),
-            wire.view.into(),
-        )
-    } else {
-        let wire: SessionWire<'_> = decode(bytes, 1)?;
-        (
-            wire.run.into_run()?,
-            wire.review.into_owned(),
-            wire.view.into_owned().into(),
-        )
-    };
+    let mut column_types=vec![];let mut date_filter_modes=vec![];
+    let (run, mut review, mut view): (_, _, ViewState) =
+        if matches!(bytes.get(8..10), Some([4, 0]) | Some([5, 0]) | Some([6,0])) {
+            let (wire, tree_label_filter) = if matches!(bytes.get(8..10),Some([5,0])|Some([6,0])) {
+                let v:SessionV5<'_>=if bytes.get(8..10)==Some(&[6,0]){let w:SessionV6<'_>=decode(bytes,1)?;column_types=w.column_types;date_filter_modes=w.date_filter_modes;w.session}else{decode(bytes,1)?};
+                (v.session, v.tree_label_filter)
+            } else {
+                (decode::<SessionV4<'_>>(bytes, 1)?, String::new())
+            };
+            metadata.reviewers = wire.session.reviewers;
+            metadata.audit = wire
+                .session
+                .audit
+                .iter()
+                .map(|v| serde_json::from_str(v))
+                .collect::<std::result::Result<_, _>>()?;
+            let mut view: ViewState = wire.session.session.view.into_owned().into();
+            view.reviewer_filter = wire.filter;
+            view.tree_label_filter = tree_label_filter;
+            (
+                wire.session.session.run.into_run()?,
+                wire.session.session.review.into_owned(),
+                view,
+            )
+        } else if bytes.get(8..10) == Some(&[3, 0]) {
+            let wire: SessionV3<'_> = decode(bytes, 1)?;
+            metadata.reviewers = wire.reviewers;
+            metadata.audit = wire
+                .audit
+                .iter()
+                .map(|v| serde_json::from_str(v))
+                .collect::<std::result::Result<_, _>>()?;
+            (
+                wire.session.run.into_run()?,
+                wire.session.review.into_owned(),
+                wire.session.view.into_owned().into(),
+            )
+        } else if bytes.get(8..10) == Some(&[1, 0]) {
+            let wire: SessionV1<'_> = decode(bytes, 1)?;
+            (
+                wire.run.into_run()?,
+                ReviewData::from(wire.review),
+                wire.view.into(),
+            )
+        } else {
+            let wire: SessionWire<'_> = decode(bytes, 1)?;
+            (
+                wire.run.into_run()?,
+                wire.review.into_owned(),
+                wire.view.into_owned().into(),
+            )
+        };
     validate_run(&run)?;
+    let mut run = run.with_unclustered();
+    ensure!(column_types.is_empty()||column_types.len()==run.source.headers.len(),"Invalid column type count");
+    run.column_types=if column_types.is_empty(){crate::columns::infer(&run.source)}else{column_types};
+    view.date_filter_modes=date_filter_modes;
+    review
+        .annotations
+        .entries
+        .entry("0".into())
+        .or_insert_with(|| crate::workflow::Annotation {
+            workflow: Some(crate::workflow::Workflow::default()),
+            ..Default::default()
+        });
     review.validate(&run)?;
     view.sanitize(&run);
     ensure!(
         metadata
             .reviewers
             .keys()
-            .all(|key| !key.contains(':') && review.annotations.entries.contains_key(key)),
+            .all(|key| review.annotations.entries.contains_key(key)),
         "Invalid imported reviewer entity"
     );
     Ok(LoadedSession {
@@ -691,13 +732,16 @@ pub fn encode_portable(
     };
     let mut bytes = encode(
         1,
-        &SessionV4 {
-            session: wire,
-            filter: view.reviewer_filter.clone(),
-        },
+        &SessionV6 {session:SessionV5 {
+            session: SessionV4 {
+                session: wire,
+                filter: view.reviewer_filter.clone(),
+            },
+            tree_label_filter: view.tree_label_filter.clone(),
+        },column_types:if metadata.column_types.is_empty(){run.column_types.clone()}else{metadata.column_types.clone()},date_filter_modes:view.date_filter_modes.clone()},
         COMPRESSION_LEVEL,
     )?;
-    bytes[8..10].copy_from_slice(&4u16.to_le_bytes());
+    bytes[8..10].copy_from_slice(&6u16.to_le_bytes());
     Ok(bytes)
 }
 pub fn encode_review(review: &ReviewData) -> Result<Vec<u8>> {
@@ -737,7 +781,14 @@ pub fn validate_run(run: &AnalysisRun) -> Result<()> {
     let mut ids = HashSet::new();
     let mut assigned = HashSet::new();
     for c in &run.clusters {
-        ensure!(c.id.0 != 0 && ids.insert(c.id), "Invalid cluster ID.");
+        ensure!(ids.insert(c.id), "Invalid cluster ID.");
+        if c.id.0 == 0 {
+            ensure!(
+                c.incident_row_indices == run.unclustered_row_indices && c.subgroups.is_empty(),
+                "Invalid Unclustered group"
+            );
+            continue;
+        }
         let mut members = HashSet::new();
         for r in &c.incident_row_indices {
             ensure!(
@@ -804,6 +855,7 @@ mod compatibility_tests {
     #[test]
     fn binary_v1_session_and_review_still_load() {
         let run = AnalysisRun {
+        column_types: vec![],
             source: SourceTable {
                 source_path: None,
                 worksheet_name: None,
@@ -843,7 +895,7 @@ mod compatibility_tests {
         .unwrap();
         session[8..10].copy_from_slice(&1u16.to_le_bytes());
         let loaded = decode_session(&session).unwrap();
-        assert_eq!(loaded.run, run);
+        let mut expected=run.clone().with_unclustered();expected.column_types=crate::columns::infer(&expected.source);assert_eq!(loaded.run,expected);
         assert!(loaded.review.annotations.labels.is_empty());
         let legacy_view = LegacyViewState::default();
         let wire = SessionWire {

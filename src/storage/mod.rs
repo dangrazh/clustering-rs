@@ -20,6 +20,7 @@ use unicode_normalization::UnicodeNormalization;
 mod dashboard;
 #[cfg(test)]
 mod tests;
+pub mod trends;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -73,6 +74,8 @@ pub struct Reviewer {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortableMeta {
+    #[serde(default)]
+    pub column_types: Vec<crate::columns::ColumnType>,
     pub reviewers: BTreeMap<String, Reviewer>,
     pub audit: Vec<Value>,
     #[serde(default)]
@@ -204,12 +207,33 @@ impl Store {
         ensure!(
             matches!(
                 scalar(&c, "SELECT version FROM schema_version").await?,
-                1 | 2
+                1..=5
             ),
             "Unsupported database schema version"
         );
         dashboard::migrate(&c).await?;
+        trends::migrate(&c).await?;
+        if scalar(&c, "SELECT version FROM schema_version").await? < 4 {
+            execute(&c, "BEGIN").await?;
+            let result = async {
+                // Rebuild derived dashboard metadata from source artifacts at startup.
+                c.execute("DELETE FROM dashboard_ready", ()).await?;
+                c.execute("UPDATE schema_version SET version=4", ()).await?;
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            finish(&c, result).await?;
+        }
+        if scalar(&c,"SELECT version FROM schema_version").await? < 5 {
+            execute(&c,"BEGIN").await?;
+            let result=async{c.execute("CREATE TABLE column_metadata(analysis TEXT PRIMARY KEY REFERENCES analyses(id),value TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 0)",()).await?;c.execute("UPDATE schema_version SET version=5",()).await?;Ok::<_,anyhow::Error>(())}.await;
+            finish(&c,result).await?;
+        }
         Ok(s)
+    }
+    pub async fn column_types(&self,aid:&str,run:&crate::model::AnalysisRun)->Result<Vec<crate::columns::ColumnType>> {
+        let c=self.connect().await?;let row=c.query("SELECT value FROM column_metadata WHERE analysis=?",[aid]).await?.next().await?;
+        match row{Some(r)=>Ok(serde_json::from_str(&r.get::<String>(0)?)?),None=>Ok(if run.column_types.len()==run.source.headers.len(){run.column_types.clone()}else{crate::columns::infer(&run.source)})}
     }
     pub async fn connect(&self) -> Result<Connection> {
         let c = self.db.connect()?;
@@ -328,9 +352,10 @@ impl Store {
             }
             c.execute("INSERT INTO analyses(id,name,normalized_name,artifact,fingerprint,creator,created) VALUES(?,?,?,?,?,?,?)",params![aid.clone(),name,normalized,artifact,review.fingerprint.clone(),user.id.clone(),now()]).await?;
             dashboard::insert_summaries(&c, &aid, &meta.summaries).await?;
+            if !meta.column_types.is_empty(){c.execute("INSERT INTO column_metadata(analysis,value) VALUES(?,?)",params![aid.clone(),serde_json::to_string(&meta.column_types)?]).await?;}
             for (key,entry) in &review.annotations.entries {
                 c.execute("INSERT INTO entities(analysis,entity,workflow,label) VALUES(?,?,?,?)",params![aid.clone(),key.clone(),serde_json::to_string(&entry.workflow)?,review.annotations.labels.get(key).cloned()]).await?;
-                if !key.contains(':'){
+                if !key.contains(':') || meta.reviewers.contains_key(key){
                     let reviewer=meta.reviewers.get(key).cloned().unwrap_or_default();
                     c.execute("INSERT INTO reviewers(analysis,entity,value,user_id) VALUES(?,?,?,?)",params![aid.clone(),key.clone(),serde_json::to_string(&reviewer)?,if reviewer.unconfirmed {None} else {reviewer.user_id.clone()}]).await?;
                 }
@@ -454,8 +479,10 @@ impl Store {
             .await?
             .context("Missing shared revision")?
             .get::<i64>(0)?;
+        let columns=c.query("SELECT value,version FROM column_metadata WHERE analysis=?",[aid]).await?.next().await?;
+        let (types,type_version)=match columns{Some(r)=>(serde_json::from_str::<Value>(&r.get::<String>(0)?)?,r.get::<i64>(1)?),None=>(Value::Null,0)};
         Ok(
-            json!({"sharedRevision":shared_revision,"review":ReviewData{analysis_id:aid.into(),fingerprint:analysis.fingerprint.clone(),annotations},"view":view,"allowedActions":allowed,"versions":versions,"reviewers":reviewers,"commentAccess":comment_access,"audit":audit,"analysis":analysis}),
+            json!({"columnTypes":types,"columnTypesVersion":type_version,"sharedRevision":shared_revision,"review":ReviewData{analysis_id:aid.into(),fingerprint:analysis.fingerprint.clone(),annotations},"view":view,"allowedActions":allowed,"versions":versions,"reviewers":reviewers,"commentAccess":comment_access,"audit":audit,"analysis":analysis}),
         )
     }
     pub async fn command(self: &Arc<Self>, aid: String, user: User, cmd: Command) -> Result<Value> {
@@ -544,7 +571,15 @@ impl Store {
             return Err(AppError::Archived.into());
         }
         let mut result = json!({"saved":true});
-        if matches!(kind, "renameAnalysis" | "archive" | "restore") {
+        if kind=="columnTypes" {
+            let types:Vec<crate::columns::ColumnType>=serde_json::from_value(cmd.action["columns"].clone())?;
+            ensure!(types.len()<=10000,"Too many columns");
+            let old=c.query("SELECT value,version FROM column_metadata WHERE analysis=?",[aid]).await?.next().await?;
+            let version=match &old{Some(r)=>r.get::<i64>(1)? as u64,None=>0};expect(version,cmd.expected)?;
+            let before=match old{Some(r)=>serde_json::from_str::<Value>(&r.get::<String>(0)?)?,None=>Value::Null};
+            c.execute("INSERT INTO column_metadata(analysis,value,version) VALUES(?,?,?) ON CONFLICT(analysis) DO UPDATE SET value=excluded.value,version=excluded.version",params![aid,serde_json::to_string(&types)?,(version+1) as i64]).await?;
+            audit(c,aid,"",user,kind,before,serde_json::to_value(types)?).await?;
+        } else if matches!(kind, "renameAnalysis" | "archive" | "restore") {
             expect(analysis.version, cmd.expected)?;
             if kind == "renameAnalysis" {
                 let (name, norm) =
@@ -582,10 +617,6 @@ impl Store {
             let wv = row.get::<i64>(1)? as u64;
             let lv = row.get::<i64>(3)? as u64;
             if kind == "reviewer" {
-                ensure!(
-                    !cmd.target.contains(':'),
-                    "Assign reviewers at cluster level."
-                );
                 let old = c
                     .query(
                         "SELECT value,version FROM reviewers WHERE analysis=? AND entity=?",
@@ -593,9 +624,16 @@ impl Store {
                     )
                     .await?
                     .next()
-                    .await?
-                    .context("Reviewer record missing")?;
-                expect(old.get::<i64>(1)? as u64, cmd.expected)?;
+                    .await?;
+                let old_value = match &old {
+                    Some(row) => serde_json::from_str::<Value>(&row.get::<String>(0)?)?,
+                    None => Value::Null,
+                };
+                let old_version = match &old {
+                    Some(row) => row.get::<i64>(1)? as u64,
+                    None => 0,
+                };
+                expect(old_version, cmd.expected)?;
                 let assigned = if let Some(uid) = cmd.action["userId"].as_str() {
                     let r = c
                         .query(
@@ -617,21 +655,22 @@ impl Store {
                 } else {
                     Reviewer::default()
                 };
+                let inherit = cmd.action["inherit"].as_bool().unwrap_or(false);
+                ensure!(
+                    !inherit || cmd.target.contains(':'),
+                    "Only themes inherit a reviewer"
+                );
+                let value = if inherit {
+                    Value::Null
+                } else {
+                    serde_json::to_value(&assigned)?
+                };
                 c.execute(
-                    "UPDATE reviewers SET value=?,user_id=?,version=version+1 WHERE analysis=? AND entity=?",
-                    params![serde_json::to_string(&assigned)?, assigned.user_id.clone(), aid, cmd.target.clone()],
+                    "INSERT INTO reviewers(analysis,entity,value,user_id,version) VALUES(?,?,?,?,?) ON CONFLICT(analysis,entity) DO UPDATE SET value=excluded.value,user_id=excluded.user_id,version=excluded.version",
+                    params![aid,cmd.target.clone(),value.to_string(),if inherit {None} else {assigned.user_id.clone()},(old_version+1) as i64],
                 )
                 .await?;
-                audit(
-                    c,
-                    aid,
-                    &cmd.target,
-                    user,
-                    kind,
-                    serde_json::from_str(&old.get::<String>(0)?)?,
-                    serde_json::to_value(assigned)?,
-                )
-                .await?;
+                audit(c, aid, &cmd.target, user, kind, old_value, value).await?;
             } else {
                 let mut data = Annotations::default();
                 data.entries.insert(
@@ -763,7 +802,7 @@ impl Store {
         let r = async {
             let mut rows = c
                 .query(
-                    "SELECT id,analysis,value FROM outbox WHERE published=0 ORDER BY id LIMIT 100",
+                    "SELECT id,resource_id,value,resource_kind FROM outbox WHERE published=0 ORDER BY id LIMIT 100",
                     (),
                 )
                 .await?;
@@ -773,16 +812,17 @@ impl Store {
                     r.get::<String>(0)?,
                     r.get::<String>(1)?,
                     r.get::<String>(2)?,
+                    r.get::<String>(3)?,
                 ));
             }
             drop(rows);
             let mut sequence =
                 scalar(&c, "SELECT COALESCE(MAX(sequence),0) FROM deliveries").await?;
-            for (oid, aid, value) in batch {
+            for (oid, aid, value, kind) in batch {
                 sequence += 1;
                 c.execute(
-                    "INSERT INTO deliveries VALUES(?,?,?,?)",
-                    params![sequence, oid.clone(), aid, value],
+                    "INSERT INTO deliveries(sequence,outbox_id,analysis,value,resource_kind,resource_id) VALUES(?,?,?,?,?,?)",
+                    params![sequence, oid.clone(), if kind=="analysis"{Some(aid.clone())}else{None}, value, kind, aid],
                 )
                 .await?;
                 c.execute("UPDATE outbox SET published=1 WHERE id=?", [oid])
@@ -799,10 +839,12 @@ impl Store {
     }
     pub async fn events(&self, after: i64) -> Result<Vec<Value>> {
         let c = self.connect().await?;
-        let mut rows=c.query("SELECT sequence,analysis,value FROM deliveries WHERE sequence>? ORDER BY sequence LIMIT 100",[after]).await?;
+        let mut rows=c.query("SELECT sequence,resource_id,value,resource_kind FROM deliveries WHERE sequence>? ORDER BY sequence LIMIT 100",[after]).await?;
         let mut out = vec![];
         while let Some(r) = rows.next().await? {
-            out.push(json!({"sequence":r.get::<i64>(0)?,"analysisId":r.get::<String>(1)?,"change":serde_json::from_str::<Value>(&r.get::<String>(2)?)?}));
+            let kind = r.get::<String>(3)?;
+            let resource = r.get::<String>(1)?;
+            out.push(json!({"sequence":r.get::<i64>(0)?,"resourceKind":kind,"analysisId":if kind=="analysis"{Some(resource.clone())}else{None},"seriesId":if kind=="series"{Some(resource)}else{None},"change":serde_json::from_str::<Value>(&r.get::<String>(2)?)?}));
         }
         Ok(out)
     }
@@ -890,8 +932,8 @@ async fn save_receipt(
 }
 async fn outbox(c: &Connection, aid: &str, value: Value) -> Result<()> {
     c.execute(
-        "INSERT INTO outbox(id,analysis,value) VALUES(?,?,?)",
-        params![id(), aid, value.to_string()],
+        "INSERT INTO outbox(id,analysis,value,resource_kind,resource_id) VALUES(?,?,?,'analysis',?)",
+        params![id(), aid, value.to_string(),aid],
     )
     .await?;
     Ok(())

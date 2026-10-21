@@ -1,8 +1,9 @@
 import { state } from "./state.js";
 
 export function assignment(s, cluster) {
-  const entry = s.shared?.reviewers?.[String(cluster)] || s.reviewers?.[String(cluster)];
-  return entry?.value || entry || {};
+  const values=s.shared?.reviewers || s.reviewers || {}, key=String(cluster);
+  const unwrap=entry=>entry&&Object.hasOwn(entry,"value")?entry.value:entry;
+  return unwrap(values[key]) || (key.includes(":")?unwrap(values[key.split(":")[0]]):null) || {};
 }
 
 export function matchesReviewer(reviewer, filter, userId) {
@@ -16,9 +17,13 @@ export function reviewerRows(s) {
   if (!s.reviewerFilter?.selected) return null;
   const rows = new Set();
   for (const cluster of s.analysis?.clusters || []) {
-    if (matchesReviewer(assignment(s, cluster.id), s.reviewerFilter, s.user?.id)) {
-      for (const row of cluster.incident_row_indices) rows.add(row);
+    const themed=new Set();
+    for(const theme of cluster.subgroups||[]){
+      const matches=matchesReviewer(assignment(s,`${cluster.id}:${theme.id}`),s.reviewerFilter,s.user?.id);
+      for(const row of theme.incident_row_indices){themed.add(row);if(matches)rows.add(row);}
     }
+    if(matchesReviewer(assignment(s,cluster.id),s.reviewerFilter,s.user?.id))
+      for(const row of cluster.incident_row_indices)if(!themed.has(row))rows.add(row);
   }
   return rows;
 }
@@ -62,8 +67,8 @@ export function bindReviewerFilter(changed) {
 
     const users = new Map((state.users || []).map(user => [user.id, user.name]));
     // Keep historical confirmed assignments selectable even if the user is no longer active.
-    for (const cluster of state.analysis?.clusters || []) {
-      const reviewer = assignment(state, cluster.id);
+    for (const key of Object.keys(state.shared?.reviewers||state.reviewers||{})) {
+      const reviewer = assignment(state, key);
       if (reviewer.userId && !reviewer.unconfirmed && !users.has(reviewer.userId)) {
         users.set(reviewer.userId, reviewer.recorded?.name || "Reviewer");
       }

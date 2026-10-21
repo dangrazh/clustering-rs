@@ -165,6 +165,8 @@ impl TimingMetrics {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisRun {
+    #[serde(default)]
+    pub column_types: Vec<crate::columns::ColumnType>,
     pub source: SourceTable,
     pub mapping: ColumnMapping,
     pub settings: RunSettings,
@@ -173,4 +175,18 @@ pub struct AnalysisRun {
     pub clusters: Vec<Cluster>,
     pub unclustered_row_indices: Vec<RowIndex>,
     pub timings: TimingMetrics,
+}
+
+impl AnalysisRun {
+    /// Derived review group; excluded from the immutable clustering fingerprint.
+    pub fn with_unclustered(mut self) -> Self {
+        self.clusters.retain(|c| c.id != ClusterId::UNCLUSTERED);
+        self.clusters.push(Cluster {
+            id: ClusterId::UNCLUSTERED,
+            label: "Unclustered".into(),
+            incident_row_indices: self.unclustered_row_indices.clone(),
+            subgroups: vec![],
+        });
+        self
+    }
 }
