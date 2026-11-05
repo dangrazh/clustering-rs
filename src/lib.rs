@@ -14,6 +14,8 @@ pub(crate) mod fixtures;
 pub mod io;
 pub mod jobs;
 pub mod labels;
+pub mod logging;
+pub mod migration;
 pub mod model;
 pub mod progress;
 pub mod schema;

@@ -135,6 +135,9 @@ pub(super) async fn supervise(state: WebState) {
         return;
     }
     loop {
+        if crate::migration::paused() { tokio::time::sleep(std::time::Duration::from_millis(250)).await; continue; }
+        let admission = crate::migration::coordinator().gate.read().await;
+        if crate::migration::paused() { drop(admission); continue; }
         let result = async {
             // A previous iteration may have lost its final write during temporary storage failure.
             state.inner.store.recover_trend_tasks().await?;
@@ -158,6 +161,7 @@ pub(super) async fn supervise(state: WebState) {
         if let Err(error) = result {
             tracing::error!(%error,"Trend worker will retry");
         }
+        drop(admission);
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }

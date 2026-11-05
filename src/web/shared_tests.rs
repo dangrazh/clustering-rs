@@ -108,6 +108,26 @@ async fn post(
 }
 
 #[tokio::test]
+async fn role_authorization_and_live_demotion_cover_admin_and_read_only_requests() -> Result<()> {
+    let (dir,state,base,token,_) = fixture_mode(true).await?;
+    let client = reqwest::Client::new();
+    let cookie = format!("app_session={token}");
+    let session = state.inner.auth.session(&cookie).await?;
+    let write_role = |role: &str| std::fs::write(dir.path().join("allowed-users.json"), serde_json::to_vec(&json!([{"email":"alice@example.invalid","name":"Alice","role":role}])).unwrap());
+    assert_eq!(client.get(format!("{base}/api/admin/status")).header(header::COOKIE,&cookie).send().await?.status(),403);
+    write_role("SysAdmin")?;
+    assert_eq!(client.get(format!("{base}/api/admin/diagnostics")).header(header::COOKIE,&cookie).send().await?.status(),200);
+    assert_eq!(client.post(format!("{base}/api/admin/export")).header(header::COOKIE,&cookie).send().await?.status(),403);
+    write_role("Read Only User")?;
+    for path in ["/api/analyze","/api/import","/api/sessions","/api/series","/api/jobs/x/save-central","/api/analyses/x/commands","/api/admin/check"] {
+        assert_eq!(post(&client,&format!("{base}{path}"),&token,&session.csrf,json!({})).await?.status(),403,"{path}");
+    }
+    assert_eq!(post(&client,&format!("{base}/api/dashboard/preferences"),&token,&session.csrf,json!({"mine":{"search":"personal"}})).await?.status(),200);
+    assert_eq!(client.get(format!("{base}/api/analyses")).header(header::COOKIE,&cookie).send().await?.status(),200);
+    Ok(())
+}
+
+#[tokio::test]
 async fn email_sign_in_uses_allowlist_name_and_protects_session_routes() -> Result<()> {
     let (_dir, state, base, _, _) = fixture_mode(true).await?;
     let client = reqwest::Client::builder()

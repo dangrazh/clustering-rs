@@ -1,4 +1,5 @@
 import { initializeSeries } from "./series.js";
+import { initializeAdmin } from "./admin.js";
 import { jobSummaryText } from "./jobs-view.js";
 import { initializeDashboard } from "./dashboard.js";
 import { state } from "./state.js";
@@ -30,6 +31,7 @@ export async function initializeCollaboration(){
       const row=document.createElement("p"),open=document.createElement("button");open.textContent=analysis.name;row.append(open);
       open.onclick=async()=>{try{await openAnalysis(analysis.id);dialog.close();}catch(e){report(e);}};
       for(const action of analysis.archived?["restore"]:["renameAnalysis","archive"]){
+        if(state.role==="Read Only User")continue;
         const button=document.createElement("button");button.textContent={restore:"Restore",renameAnalysis:"Rename",archive:"Archive"}[action];row.append(" ",button);
         button.onclick=async()=>{
           try{
@@ -59,6 +61,7 @@ export async function initializeCollaboration(){
   document.getElementById("signOut").onclick=async()=>{await request("/auth/logout",post({}));location.reload();};
   try{
     const session=await json("/api/me");state.user=session.user;state.csrf=session.csrf;
+    initializeAdmin(session.role || "User");
     document.getElementById("signedInUser").textContent=session.user.name;
     state.users=await json("/api/users");
   }catch{
@@ -96,7 +99,7 @@ export async function initializeCollaboration(){
       const open=document.createElement("button");open.textContent=job.state==="finished"?"Open result":"View progress";row.append(open);
       open.disabled=["failed","cancelled"].includes(job.state);
       open.onclick=async()=>{if(job.metadata?.analysisId)await openAnalysis(job.metadata.analysisId);else{state.analysisId=null;state.jobId=job.id;if(job.state==="finished")await loadResult(job.id);else listenForProgress(job.id);}jobsDialog.close();};
-      if(["queued","running"].includes(job.state)||job.input&&["failed","cancelled"].includes(job.state)){
+      if(state.role!=="Read Only User"&&(["queued","running"].includes(job.state)||job.input&&["failed","cancelled"].includes(job.state))){
         const operation=["queued","running"].includes(job.state)?"cancel":"resubmit";
         const button=document.createElement("button");button.textContent=operation==="cancel"?"Cancel":"Resubmit";row.append(" ",button);
         button.onclick=async()=>{try{await json(`/api/jobs/${job.id}/${operation}`,post({}));await showJobs();}catch(e){noticeDialog(e.message);}};

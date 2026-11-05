@@ -22,6 +22,11 @@ async fn allowlist_identity_reload_and_validation() -> Result<()> {
     let first = auth.email_login("ALICE@example.invalid ").await?;
     assert!(first.contains("; Secure;"));
     let a = auth.session(&first).await?;
+    assert_eq!(a.role, Role::User);
+    for role in ["SysAdmin", "Read Only User"] {
+        std::fs::write(&path, serde_json::to_vec(&json!([{"email":"alice@example.invalid","name":"Alice Reviewer","role":role}]))?)?;
+        assert_eq!(serde_json::to_value(auth.session(&first).await?.role)?, role);
+    }
     let second = auth.email_login("alice@example.invalid").await?;
     assert_eq!(a.user.id, auth.session(&second).await?.user.id);
     assert_eq!(a.user.name, "Alice Reviewer");
@@ -44,6 +49,7 @@ async fn allowlist_identity_reload_and_validation() -> Result<()> {
         r#"[{"email":"bad","name":"Name"}]"#,
         r#"[{"email":"a@example.invalid","name":" "}]"#,
         "not JSON",
+        r#"[{"email":"a@example.invalid","name":"A","role":"Administrator"}]"#,
     ] {
         std::fs::write(&path, invalid)?;
         assert!(Auth::with_allowlist(store.clone(), config.clone())
@@ -54,6 +60,25 @@ async fn allowlist_identity_reload_and_validation() -> Result<()> {
     std::fs::remove_file(&path)?;
     assert!(auth.email_login("alice@example.invalid").await.is_err());
     Ok(())
+}
+
+#[test]
+fn roles_enforce_read_only_exceptions_and_admin_boundary() {
+    use http::Method;
+    for role in [Role::User, Role::ReadOnly] {
+        for method in [Method::GET,Method::POST] { assert!(!role.permits(&method,"/api/admin/export")); }
+    }
+    for action in ["commands", "review/save", "review/prepare", "review/commit", "save-central", "cancel", "resubmit"] {
+        assert!(!Role::ReadOnly.permits(&Method::POST,&format!("/api/jobs/id/{action}")));
+        assert!(!Role::ReadOnly.permits(&Method::POST,&format!("/api/analyses/id/{action}")));
+    }
+    for path in ["/api/import","/api/analyze","/api/sessions","/api/series/id/delete","/api/series/id/commands"] {
+        assert!(!Role::ReadOnly.permits(&Method::POST,path)); assert!(Role::User.permits(&Method::POST,path));
+    }
+    for path in ["/api/analyses/id/pivot","/api/analyses/id/pivot/export","/api/analyses/id/cluster-view/export","/api/analyses/id/session/save","/api/analyses/id/view","/api/analyses/id/presence","/api/dashboard/preferences"] {
+        assert!(Role::ReadOnly.permits(&Method::POST,path));
+    }
+    assert!(Role::SysAdmin.permits(&Method::POST,"/api/admin/activate"));
 }
 
 fn config() -> EntraConfig {

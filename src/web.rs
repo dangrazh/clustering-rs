@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 mod jobs_runtime;
+mod admin;
 mod review_api;
 mod shared;
 #[cfg(test)]
@@ -236,12 +237,26 @@ pub async fn serve(address: SocketAddr, config: AppConfig) -> Result<()> {
     let telemetry = start_telemetry(state.inner.clone());
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
+    let mut connections = tokio::task::JoinSet::new();
+    let mut maintenance_tick = tokio::time::interval(std::time::Duration::from_millis(250));
 
     loop {
-        let accepted = tokio::select! {accepted=listener.accept()=>accepted, _=&mut shutdown=>{supervisor.abort();trend_supervisor.abort();publisher.abort();telemetry.abort();let _=supervisor.await;let _=trend_supervisor.await;let _=publisher.await;let _=telemetry.await;return Ok(());}};
+        let accepted = tokio::select! {
+            accepted=listener.accept()=>accepted,
+            _=maintenance_tick.tick()=>{
+                if !crate::migration::paused() { continue; }
+                let Ok(_drained) = crate::migration::coordinator().gate.try_write() else { continue; };
+                supervisor.abort(); trend_supervisor.abort(); publisher.abort(); telemetry.abort();
+                let _=supervisor.await; let _=trend_supervisor.await; let _=publisher.await; let _=telemetry.await;
+                connections.abort_all(); while connections.join_next().await.is_some() {}
+                return Ok(());
+            },
+            _=&mut shutdown=>{supervisor.abort();trend_supervisor.abort();publisher.abort();telemetry.abort();let _=supervisor.await;let _=trend_supervisor.await;let _=publisher.await;let _=telemetry.await;connections.abort_all();while connections.join_next().await.is_some() {} return Ok(());}
+        };
         let (stream, _) = accepted?;
         let state = state.clone();
-        tokio::spawn(async move {
+        while connections.try_join_next().is_some() {}
+        connections.spawn(async move {
             let io = TokioIo::new(stream);
             if let Err(err) = hyper::server::conn::http1::Builder::new()
                 .serve_connection(io, service_fn(move |request| route(request, state.clone())))
@@ -300,10 +315,26 @@ async fn route(
     request: Request<Incoming>,
     state: WebState,
 ) -> Result<Response<BoxBody>, Infallible> {
-    Ok(match handle(request, state).await {
+    let started = std::time::Instant::now();
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    tracing::trace!(%method, %path, "HTTP request received");
+    let response = match handle(request, state).await {
         Ok(response) => response,
-        Err(err) => shared::error_response(&err),
-    })
+        Err(err) => {
+            let response = shared::error_response(&err);
+            if response.status().is_server_error() {
+                tracing::error!(%method, %path, error = %err, "HTTP request failed");
+            }
+            response
+        }
+    };
+    if crate::logging::routine_response(&method, &path, response.status()) {
+        tracing::trace!(%method, %path, status = response.status().as_u16(), elapsed_ms = started.elapsed().as_millis(), "HTTP response ready");
+    } else {
+        tracing::debug!(%method, %path, status = response.status().as_u16(), elapsed_ms = started.elapsed().as_millis(), "HTTP response ready");
+    }
+    Ok(response)
 }
 
 async fn shutdown_signal() {
@@ -323,12 +354,22 @@ async fn handle(request: Request<Incoming>, mut state: WebState) -> Result<Respo
     let method = request.method().clone();
     let uri = request.uri().clone();
     let path = uri.path();
+    let _admission = if !path.starts_with("/api/admin/") && path != "/api/maintenance" {
+        if crate::migration::paused() && (path.starts_with("/api/") || path.starts_with("/auth/") || path == "/login") {
+            return Ok(json_error(StatusCode::SERVICE_UNAVAILABLE, "Maintenance in progress. Save drafts after service resumes."));
+        }
+        let guard = crate::migration::coordinator().gate.read().await;
+        if crate::migration::paused() { return Ok(json_error(StatusCode::SERVICE_UNAVAILABLE, "Maintenance in progress")); }
+        Some(guard)
+    } else { None };
     let mut _heavy_permit = None;
     if path.starts_with("/auth/") || path == "/login" {
         return shared::auth_route(request, state).await;
     }
     if path.starts_with("/api/") {
         shared::authorize(&request, &mut state).await?;
+        if path.starts_with("/api/admin/") { return admin::route(request,state).await; }
+        if path == "/api/maintenance" { return json_response(StatusCode::OK,&serde_json::json!({"maintenance":crate::migration::paused()})); }
         if matches!(path, "/api/import" | "/api/sessions" | "/api/analyze")
             || [
                 "/export",
@@ -357,6 +398,7 @@ async fn handle(request: Request<Incoming>, mut state: WebState) -> Result<Respo
     }
 
     match (method, path) {
+        (Method::GET, "/admin.js") => Ok(text_response(StatusCode::OK,"text/javascript",include_str!("web_assets/admin.js"))),
         (Method::GET, "/healthz") => {
             let c = state.inner.store.connect().await?;
             crate::storage::scalar(&c, "SELECT 1").await?;

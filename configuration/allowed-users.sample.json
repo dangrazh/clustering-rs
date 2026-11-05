@@ -1,4 +1,5 @@
 [
-  { "email": "alice@your-company.example", "name": "Alice Reviewer" },
-  { "email": "bob@your-company.example", "name": "Bob Analyst" }
+  { "email": "alice@your-company.example", "name": "Alice Administrator", "role": "SysAdmin" },
+  { "email": "bob@your-company.example", "name": "Bob Analyst", "role": "User" },
+  { "email": "reader@your-company.example", "name": "Example Reader", "role": "Read Only User" }
 ]

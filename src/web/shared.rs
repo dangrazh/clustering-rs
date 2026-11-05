@@ -46,6 +46,7 @@ pub(super) async fn authorize(request: &Request<Incoming>, state: &mut WebState)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let session = state.inner.auth.session(cookies).await?;
+    anyhow::ensure!(session.role.permits(request.method(), request.uri().path()), AppError::Forbidden);
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
         check_csrf(request, &session)?;
     }

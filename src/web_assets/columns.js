@@ -1,6 +1,10 @@
 import {state} from "./state.js";
 import {request} from "./api.js";
 export function datePart(value,order="DMY"){
+ if(order==="YMD_HMS"){
+  const match=String(value??"").trim().match(/^\d{4}-\d{2}-\d{2} (\d{2}):(\d{2}):(\d{2})$/);
+  if(!match||Number(match[1])>23||Number(match[2])>59||Number(match[3])>59)return null;
+ }
  const text=String(value??"").trim().split(/[T ]/)[0];let m=text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/),y,month,d;
  if(m){[,y,month,d]=m.map(Number);}else{m=text.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);if(!m)return null;y=Number(m[3]);month=Number(m[order==="MDY"?1:2]);d=Number(m[order==="MDY"?2:1]);}
  if(y<1||y>9999||month<1||month>12||d<1)return null;
@@ -17,7 +21,7 @@ export function renderColumnTypes(target,headers,columns,changed=()=>{}){
  headers.forEach((name,index)=>{
   columns[index]||={dataType:"Text",dateOrder:"DMY"};const row=document.createElement("div"),label=document.createElement("label"),type=document.createElement("select"),order=document.createElement("select");row.className="column-type-row";
   label.textContent=name;for(const value of ["Text","Number","Date/Time"])type.add(new Option(value,value));type.value=columns[index].dataType;type.setAttribute("aria-label",`Data type: ${name}`);label.append(type);
-  order.add(new Option("Day / month / year","DMY"));order.add(new Option("Month / day / year","MDY"));order.value=columns[index].dateOrder;order.setAttribute("aria-label",`Date order: ${name}`);order.hidden=type.value!=="Date/Time";
+  order.add(new Option("Day / month / year","DMY"));order.add(new Option("Month / day / year","MDY"));order.add(new Option("Year-month-day hour:minute:seconds","YMD_HMS"));order.value=columns[index].dateOrder;order.setAttribute("aria-label",`Date order: ${name}`);order.title="Example: 2026-10-29 14:05:09";order.hidden=type.value!=="Date/Time";
   type.onchange=()=>{columns[index].dataType=type.value;order.hidden=type.value!=="Date/Time";changed();};order.onchange=()=>{columns[index].dateOrder=order.value;changed();};row.append(label,order);grid.append(row);
  });
 }

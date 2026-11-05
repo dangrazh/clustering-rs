@@ -75,7 +75,7 @@ fn copy_tree(
         let file = file?;
         let rel = relative.join(file.file_name());
         if relative.as_os_str().is_empty()
-            && matches!(file.file_name().to_str(), Some("instance.lock" | "staging"))
+            && matches!(file.file_name().to_str(), Some("instance.lock" | "staging" | ".migration" | ".stores" | "active-store.json"))
         {
             continue;
         }

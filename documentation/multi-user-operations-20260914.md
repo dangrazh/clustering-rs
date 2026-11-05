@@ -24,7 +24,10 @@ The application does not have a development sign-in bypass. Without Entra config
 | `APP_JOB_TIMEOUT_SECONDS` | Child wall-clock limit, default 3600; range 60–86400; timed-out jobs fail and require explicit resubmission |
 | `APP_HEAVY_REQUESTS` | Concurrent imports, initial saves, result serialization, pivots and exports, default 2; range 1–8; excess requests receive retryable HTTP 503 |
 | `CLUSTERING_WEB_CONFIG` | Existing optional label-term configuration JSON |
-| `RUST_LOG` | Logging filter, default `info` |
+| `APP_LOG_LEVEL` | `ERROR`, `WARN`, `INFO`, `DEBUG`, or `TRACE` (case-insensitive); default `INFO` |
+| `APP_LOG_CONSOLE` | Write logs to standard error; `true` (default) or `false` |
+| `APP_LOG_FILE` | Optional append-only log file path; unset means no file output |
+| `RUST_LOG` | Optional advanced tracing filter, overriding `APP_LOG_LEVEL`, e.g. `info,incident_clustering_analyzer=debug` |
 | `ENTRA_TENANT_ID` | Company tenant UUID; required for sign-in |
 | `ENTRA_CLIENT_ID` | Application registration/client ID |
 | `ENTRA_CLIENT_SECRET` | Client secret injected through deployment secrets |
@@ -35,6 +38,25 @@ The application does not have a development sign-in bypass. Without Entra config
 Register a single-tenant web application using authorization code flow. Configure `openid profile email` and the `acct` optional ID-token claim when guest access is disabled: employee accounts must supply `acct=0`. The ID token must supply a display name and a valid email or email-form preferred username. The application validates signature, issuer, audience, tenant, object ID, nonce, expiry and not-before time. Sign-in uses state and PKCE; application sessions use opaque, secure, HTTP-only cookies and CSRF tokens.
 
 Tenant/client/redirect values were not available during implementation. Company sign-in, guest eligibility, session lifetime and access-removal policy therefore remain staging prerequisites. Disabling a user in Entra prevents subsequent sign-ins; existing application sessions expire according to `APP_SESSION_SECONDS`. Immediate application-session revocation is not tied to Entra events. Do not assume it is.
+
+## Logging
+
+Logging defaults to INFO and console output. `APP_LOG_LEVEL=DEBUG` or `TRACE` enables that verbosity for application modules while keeping dependencies (including Turso) at INFO. ERROR and WARN continue to apply globally. `RUST_LOG`, when set, replaces this filtering entirely: remove a previous `RUST_LOG=debug` setting to use the quieter default. For explicit database diagnostics, use e.g. `RUST_LOG=info,incident_clustering_analyzer=debug,turso_core=debug`.
+
+To log to both destinations, set `APP_LOG_FILE=/data/logs/application.log`. For file-only output, also set `APP_LOG_CONSOLE=false`. Create the parent directory first and make it writable by the application identity. Relative paths resolve from the process working directory. Invalid settings or an inaccessible log file stop startup with an explanatory error; disabling both destinations is rejected.
+
+For example, in PowerShell before starting the application:
+
+```powershell
+$env:APP_LOG_LEVEL = 'DEBUG'
+$env:APP_LOG_FILE = 'C:/codex/clustering-web/application.log'
+$env:APP_LOG_CONSOLE = 'true'
+cargo run --release
+```
+
+Each entry includes a timestamp, severity, Rust module and event fields. ERROR records failures, WARN records recoverable problems, INFO records normal lifecycle/activity, DEBUG adds HTTP response status/timing, and TRACE includes request arrival events. Successful static asset requests, health checks, job-list/dashboard polling and presence heartbeats have response logs only at TRACE; their failed responses remain visible at DEBUG (server errors also log at ERROR). Shared-command outcomes remain at DEBUG and runtime metrics remain at INFO. HTTP timing measures response preparation, not completion of streamed downloads or SSE connections. Request logging omits query strings, headers and bodies. Advanced dependency logging can be verbose; restrict access to diagnostic logs.
+
+Clustering workers inherit the logging settings and keep their stdout progress protocol separate from logs. File output appends across restarts, with no built-in rotation or retention. Schedule log rotation/retention in the hosting environment; restart the application after renaming a log file so it opens the new file. Configuration changes also require a restart.
 
 ## User and storage behavior
 
@@ -57,6 +79,8 @@ Clustering children receive only OS path/temp variables, worker-thread configura
 New `.icas` downloads use schema 3. Schema 1 and 2 imports remain supported. Imports create new central identities, preserve recorded comment attribution as read-only, mark imported reviewers unconfirmed, and initialize only the importing user's view. New comments retain normal ownership. `.icar` review replacement is no longer served.
 
 ## Backup, restore and upgrades
+
+For browser-driven migration, roles and the Sysadmin pane, see the [Sysadmin and migration guide](sysadmin-migration-operations-20261104.md). After an import, `active-store.json` selects the active database beneath the fixed mounted root. The backup command resolves that selection; do not copy just the old root database.
 
 Use the application backup command from the hosting scheduler. **Stop the application first.** Live backups have not been adopted for this release. Back up the complete database and its sidecars together with referenced artifacts and inputs; do not copy only `analysis.db`.
 

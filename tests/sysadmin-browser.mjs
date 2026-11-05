@@ -1,0 +1,56 @@
+import {chromium} from '@playwright/test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+const [source,destination]=process.argv.slice(2);
+const browser=await chromium.launch({headless:true});
+const errors=[];
+try {
+ await fs.mkdir('target/sysadmin-browser',{recursive:true});
+ async function login(base,email,colorScheme='light'){
+  const context=await browser.newContext({colorScheme,viewport:{width:1440,height:1000},acceptDownloads:true});
+  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+  await page.goto(`${base}/login`);await page.locator('input[type=email]').fill(email);await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await page.waitForSelector('#signedInUser');return {context,page};
+ }
+ const admin=await login(source,'admin@example.invalid','dark');
+ await admin.page.getByRole('button',{name:'Sysadmin',exact:true}).click();
+ await admin.page.getByRole('cell',{name:'Migration A',exact:true}).waitFor();
+ await admin.page.screenshot({path:'target/sysadmin-browser/dark.png',fullPage:true});
+ await admin.page.getByRole('button',{name:'Check integrity',exact:true}).click();
+ await admin.page.getByText('Integrity: Referenced artifact checksums checked',{exact:true}).waitFor();
+ await admin.page.getByRole('button',{name:'Export migration package',exact:true}).click();
+ await admin.page.getByRole('button',{name:'Start export',exact:true}).click();
+ const downloadLink=admin.page.getByRole('link',{name:'Download migration package',exact:true});
+ await downloadLink.waitFor({timeout:60000});
+ const pendingDownload=admin.page.waitForEvent('download');await downloadLink.click();const download=await pendingDownload;
+ await download.saveAs('target/sysadmin-browser/migration.icam');
+ const target=await login(destination,'admin@example.invalid');
+ await target.page.getByRole('button',{name:'Sysadmin',exact:true}).click();
+ await target.page.getByLabel('Migration package',{exact:true}).setInputFiles('target/sysadmin-browser/migration.icam');
+ await target.page.getByRole('button',{name:'Upload and validate',exact:true}).click();
+ await target.page.getByRole('button',{name:'Activate restored data',exact:true}).waitFor({timeout:60000});
+ await target.page.screenshot({path:'target/sysadmin-browser/light.png',fullPage:true});
+ await target.page.getByRole('button',{name:'Activate restored data',exact:true}).click();
+ await target.page.getByRole('button',{name:'Activate and restart',exact:true}).click();
+ await target.page.getByRole('link',{name:'Sign in again',exact:true}).waitFor({timeout:60000});
+ const restored=await login(destination,'admin@example.invalid');
+ await restored.page.getByRole('button',{name:'Sysadmin',exact:true}).click();
+ await restored.page.getByRole('cell',{name:'Migration A',exact:true}).waitFor();
+ await restored.page.getByRole('cell',{name:'Migration B',exact:true}).waitFor();
+ const operation=await restored.page.evaluate(()=>fetch('/api/admin/status').then(r=>r.json()));assert.equal(operation.operation.state,'complete');
+ const reader=await login(destination,'reader@example.invalid');
+ assert.equal(await reader.page.getByRole('button',{name:'Sysadmin',exact:true}).count(),0);
+ assert.equal(await reader.page.locator('#centralSave').isDisabled(),true);
+ const denied=await reader.page.evaluate(async()=>{const me=await fetch('/api/me').then(r=>r.json());return (await fetch('/api/analyze',{method:'POST',headers:{'X-CSRF-Token':me.csrf,'Content-Type':'application/json'},body:'{}'})).status;});assert.equal(denied,403);
+ const data=await reader.page.evaluate(()=>fetch('/api/analyses').then(r=>r.json()));assert.equal(data.length,2);
+ await reader.page.getByRole('button',{name:'Analyses',exact:true}).click();
+ await reader.page.locator('#analysisLibrary').getByRole('button',{name:'Migration A',exact:true}).click();
+ await reader.page.locator('#results.active').waitFor();
+ assert.equal(await reader.page.locator('#editColumnTypes').isDisabled(),true);
+ await reader.page.locator('[data-workflow-key]').first().click();
+ await reader.page.locator('#workflowDialog[open]').waitFor();
+ assert.equal(await reader.page.locator('#workflowPanel').getByRole('button',{name:'Assign',exact:true}).isDisabled(),true);
+ assert.equal(await reader.page.locator('#workflowPanel').getByRole('button',{name:'Save workflow',exact:true}).isDisabled(),true);
+ assert.deepEqual(errors,[]);
+ console.log('Passed: dark/light Sysadmin pane, integrity check, export download, upload preview, activation/reconnect, two preserved analyses and read-only authorization.');
+} finally {await browser.close();}

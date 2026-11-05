@@ -111,6 +111,9 @@ fn trim_results(state: &WebState, keep: &str) {
 }
 pub(super) async fn supervise(state: WebState) {
     loop {
+        if crate::migration::paused() { tokio::time::sleep(std::time::Duration::from_millis(250)).await; continue; }
+        let admission = crate::migration::coordinator().gate.read().await;
+        if crate::migration::paused() { drop(admission); continue; }
         let result = async {
             if let Some(job) = jobs::next(&state.inner.store).await? {
                 if jobs::change(&state.inner.store, &job.id, "queued", "running", None, None)
@@ -139,6 +142,7 @@ pub(super) async fn supervise(state: WebState) {
             tracing::error!(%error,"Clustering supervisor will retry");
         }
         trim_results(&state, "");
+        drop(admission);
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }
@@ -177,6 +181,9 @@ pub(super) async fn run_child(
                     | "TMPDIR"
                     | "APP_WORKER_THREADS"
                     | "RUST_LOG"
+                    | "APP_LOG_LEVEL"
+                    | "APP_LOG_CONSOLE"
+                    | "APP_LOG_FILE"
             )
         }))
         .arg("worker")

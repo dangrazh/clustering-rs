@@ -1,41 +1,32 @@
+# Ignore agent configuration and tokensave files
 .claude/
 .tokensave/
-.dotnet/
-.nuget/
-.localappdata/
-.verify/
+
+# Ignore build artifacts and test data
 target/
 target-codex-tests/
-data/
-node_modules/
 Test_data/
-NuGet.Config
+
+# Ignore node modules required for local development and testing
+node_modules/
+
+# Ignore the app data directory 
+data/
+
+# Ignore text files and markdown files and example JSON files
 *.txt
-Tests/
 *.md
-!documentation/web-architecture.md
-!documentation/multi-user-operations-20260914.md
-!documentation/multi-user-implementation-status-20260914.md
-!documentation/dashboard-reviewer-requirements-20260916.md
-!documentation/dashboard-reviewer-implementation-plan-20260916.md
-!documentation/dashboard-reviewer-implementation-status-20260916.md
-!documentation/cluster-trends-requirements-20260917.md
-!documentation/cluster-trends-implementation-plan-20260917.md
-!documentation/cluster-trends-operations-20260918.md
-!documentation/cluster-trends-implementation-status-20260918.md
-!src/auth_fixtures/README.md
 *.example.json
-/tests
-!/tests/
-/tests/*
-!/tests/sessions.rs
-!/tests/common/
-/tests/common/*
-!/tests/common/mod.rs
+
+# Ignore anything related to local auth fixtures
+src/auth_fixtures/
+*.pem
+*.key
+
+# Ignore local startup scripts and local configuration files
+start-local.ps1
+
+# Ignore the files related to Docker and containerization
 .dockerignore
 Dockerfile
-# src/IncidentClusteringAnalyzer/obj/
-# src/IncidentClusteringAnalyzer/bin/
-# src/IncidentClusteringAnalyzer.Core/obj/
-# src/IncidentClusteringAnalyzer.Core/bin/
 

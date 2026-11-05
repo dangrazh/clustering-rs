@@ -18,14 +18,40 @@ pub struct AllowlistConfig {
     pub session_seconds: i64,
     pub secure_cookie: bool,
 }
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Role {
+    SysAdmin,
+    #[default]
+    User,
+    #[serde(rename = "Read Only User")]
+    ReadOnly,
+}
+impl Role {
+    pub fn permits(self, method: &http::Method, path: &str) -> bool {
+        if path.starts_with("/api/admin/") { return self == Self::SysAdmin; }
+        if self != Self::ReadOnly { return true; }
+        if matches!(*method, http::Method::GET | http::Method::HEAD) { return true; }
+        if *method != http::Method::POST { return false; }
+        if path == "/api/dashboard/preferences" { return true; }
+        for prefix in ["/api/analyses/", "/api/jobs/"] {
+            if let Some((id, action)) = path.strip_prefix(prefix).and_then(|p| p.split_once('/')) {
+                return !id.is_empty() && matches!(action, "view" | "presence" | "incidents/export" | "cluster-view/export" | "pivot" | "pivot/export" | "session/save");
+            }
+        }
+        false
+    }
+}
+
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AllowedUser {
     email: String,
     name: String,
+    #[serde(default)]
+    role: Role,
 }
 impl AllowlistConfig {
-    async fn users(&self) -> Result<HashMap<String, String>> {
+    async fn users(&self) -> Result<HashMap<String, AllowedUser>> {
         use tokio::io::AsyncReadExt;
         let file = tokio::fs::File::open(&self.path)
             .await
@@ -48,7 +74,7 @@ impl AllowlistConfig {
                 "Invalid allowlist display name"
             );
             ensure!(
-                users.insert(email, name).is_none(),
+                users.insert(email.clone(), AllowedUser { email, name, role: entry.role }).is_none(),
                 "Duplicate allowlist email (case-insensitive)"
             );
         }
@@ -108,6 +134,7 @@ pub struct Auth {
 }
 #[derive(Clone, Serialize)]
 pub struct Session {
+    pub role: Role,
     pub user: User,
     pub csrf: String,
     pub expires: i64,
@@ -185,7 +212,7 @@ impl Auth {
         let name = users.get(&email).ok_or(AppError::Forbidden)?;
         let user = self
             .store
-            .user(&format!("allowlist:{email}"), name, &email)
+            .user(&format!("allowlist:{email}"), &name.name, &email)
             .await?;
         let token = self.issue(&user, config.session_seconds).await?;
         Ok(self.session_cookie(&token, config.session_seconds))
@@ -355,6 +382,7 @@ impl Auth {
         let c = self.store.connect().await?;
         let row=c.query("SELECT u.id,u.name,u.email,s.csrf,s.expires,u.external_id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires>? AND u.active=1",params![digest(token.as_bytes()),now()]).await?.next().await?.ok_or(AppError::Unauthorized)?;
         let mut session = Session {
+            role: Role::User,
             user: User {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -368,14 +396,22 @@ impl Auth {
                 row.get::<String>(5)? == format!("allowlist:{}", session.user.email),
                 AppError::Unauthorized
             );
-            session.user.name = config
+            let entry = config
                 .users()
                 .await?
                 .get(&session.user.email)
                 .cloned()
                 .ok_or(AppError::Unauthorized)?;
+            session.user.name = entry.name;
+            session.role = entry.role;
         } else if self.config.is_some() && !row.get::<String>(5)?.starts_with("entra:") {
             return Err(AppError::Unauthorized.into());
+        }
+        if self.allowlist.is_none() {
+            if let Some(path) = std::env::var_os("APP_EMAIL_ALLOWLIST") {
+                let config = AllowlistConfig { path: path.into(), session_seconds: 28800, secure_cookie: true };
+                session.role = config.users().await?.get(&session.user.email.to_lowercase()).map(|u| u.role).unwrap_or_default();
+            }
         }
         Ok(session)
     }

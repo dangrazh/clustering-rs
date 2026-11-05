@@ -32,9 +32,7 @@ impl RuntimeConfig {
             64,
         )?;
         Ok(Self {
-            data_dir: std::env::var("APP_DATA_DIR")
-                .unwrap_or_else(|_| "data".into())
-                .into(),
+            data_dir: crate::migration::resolve(Path::new(&std::env::var("APP_DATA_DIR").unwrap_or_else(|_| "data".into())))?,
             database_writers: number("APP_DATABASE_WRITERS", 4, 1, 16)?,
             cache_bytes: number("APP_CACHE_MIB", 4096, 64, 32768)? * 1024 * 1024,
         })

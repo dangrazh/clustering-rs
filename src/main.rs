@@ -1,11 +1,18 @@
 use anyhow::Result;
 use incident_clustering_analyzer::config::AppConfig;
 use incident_clustering_analyzer::web;
-use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_logging();
+    incident_clustering_analyzer::logging::LoggingConfig::from_env()?.init()?;
+    let result = run().await;
+    if let Err(error) = &result {
+        tracing::error!(%error, "Application stopped with an error");
+    }
+    result
+}
+
+async fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|s| s == "healthcheck") {
         let address = std::env::var("CLUSTERING_WEB_BIND")
@@ -26,8 +33,9 @@ async fn main() -> Result<()> {
             "Usage: incident-clustering-analyzer backup <new-directory>"
         );
         let root = std::env::var("APP_DATA_DIR").unwrap_or_else(|_| "data".into());
+        let _service_lock = incident_clustering_analyzer::migration::service_lock(std::path::Path::new(&root))?;
         return incident_clustering_analyzer::backup::backup(
-            std::path::Path::new(&root),
+            &incident_clustering_analyzer::migration::resolve(std::path::Path::new(&root))?,
             std::path::Path::new(&args[2]),
         );
     }
@@ -55,12 +63,15 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
         .parse()?;
     let config = AppConfig::load_from_env()?;
-    web::serve(address, config).await
-}
-
-fn init_logging() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = fmt().with_env_filter(filter).without_time().try_init();
+    let root = std::path::absolute(std::env::var("APP_DATA_DIR").unwrap_or_else(|_| "data".into()))?;
+    std::fs::create_dir_all(&root)?;
+    let _service_lock = incident_clustering_analyzer::migration::service_lock(&root)?;
+    // Recovery runs before opening the live database, including a rename interrupted by a crash.
+    incident_clustering_analyzer::migration::offline(&root).await?;
+    loop {
+        web::serve(address, config.clone()).await?;
+        if !incident_clustering_analyzer::migration::offline(&root).await? { return Ok(()); }
+    }
 }
 
 fn configure_parallelism() -> Result<usize> {

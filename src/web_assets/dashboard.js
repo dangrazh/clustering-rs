@@ -11,6 +11,14 @@ async function json(url,options){const r=await request(url,options),v=await r.js
 const node=(tag,text,cls)=>{const e=document.createElement(tag);if(text!=null)e.textContent=text;if(cls)e.className=cls;return e;};
 const button=(text,action)=>{const b=node("button",text);b.type="button";b.onclick=()=>Promise.resolve().then(action).catch(e=>noticeDialog(e.message));return b;};
 const empty=(list,text)=>list.append(node("p",text,"dashboard-empty"));
+// Cells truncate to keep rows on one line, so the full value stays available as a tooltip.
+const cell=(text,cls="dashboard-meta",title=text)=>{const e=node("span",text,cls);e.title=title;return e;};
+const shortDate=date=>date.toLocaleString([],{dateStyle:"short",timeStyle:"short"});
+const dateCell=date=>cell(shortDate(date),"dashboard-meta",date.toLocaleString());
+const count=value=>cell(value.toLocaleString(),"dashboard-meta dashboard-number");
+const head=(...labels)=>{const e=node("div",null,"dashboard-head");e.append(...labels.map(label=>node("span",label)));return e;};
+const openButton=(text,key,action)=>{const b=button(text,action);b.className="dashboard-open";b.title=text;b.dataset.key=key;return b;};
+const moreButton=(text,action)=>{const b=button(text,action);b.className="dashboard-more";return b;};
 export async function initializeDashboard(openAnalysis){
   const saved=await json("/api/dashboard/preferences");
   const prefs={version:1,mine:{search:"",archived:false,...saved.mine},all:{search:"",archived:false,...saved.all},assigned:{archived:false,status:"",...saved.assigned},expanded:Array.isArray(saved.expanded)?saved.expanded:[]};
@@ -20,7 +28,7 @@ export async function initializeDashboard(openAnalysis){
   function changed(){dirty=true;saveStatus.textContent="Saving dashboard settings…";render();}
   async function save(){if(!dirty||saving)return;saving=true;dirty=false;const value=structuredClone(prefs);try{await json("/api/dashboard/preferences",post(value));saveStatus.textContent=dirty?"Saving dashboard settings…":"Dashboard settings saved";}catch{dirty=true;saveStatus.textContent="Settings not saved — retrying";}finally{saving=false;}}
   for(const [key,title] of [["jobs","My jobs"],["mine","My analyses"],["assigned","Assigned work"],["all","All analyses"]]){
-    const panel=node("section",null,"dashboard-panel"),heading=node("h3",title),controls=node("div",null,"dashboard-controls"),error=node("p",null,"dashboard-error"),list=node("div",null,"dashboard-list");heading.id=`dashboard-${key}-title`;panel.setAttribute("aria-labelledby",heading.id);error.setAttribute("role","status");panel.append(heading,controls,error,list);grid.append(panel);sections[key]={panel,list,error};
+    const panel=node("section",null,"dashboard-panel"),heading=node("h3",title),controls=node("div",null,"dashboard-controls"),error=node("p",null,"dashboard-error"),list=node("div",null,"dashboard-list");list.dataset.list=key;heading.id=`dashboard-${key}-title`;panel.setAttribute("aria-labelledby",heading.id);error.setAttribute("role","status");panel.append(heading,controls,error,list);grid.append(panel);sections[key]={panel,list,error};
     if(key==="mine"||key==="all"){const input=node("input");input.type="search";input.placeholder="Search by name";input.setAttribute("aria-label",`Search ${title}`);input.value=prefs[key].search;input.oninput=()=>{prefs[key].search=input.value.slice(0,200);changed();};controls.append(input);}
     if(key!=="jobs"){const label=node("label"),input=node("input");input.type="checkbox";input.checked=!!prefs[key].archived;input.onchange=()=>{prefs[key].archived=input.checked;changed();};label.append(input,document.createTextNode(" Show archived"));controls.append(label);}
     if(key==="assigned"){const select=node("select");select.setAttribute("aria-label","Assigned work status");for(const [value,label] of [["","All statuses"],...Object.entries(statusLabels)]){const o=node("option",label);o.value=value;select.append(o);}select.value=prefs.assigned.status;select.onchange=()=>{prefs.assigned.status=select.value;changed();};controls.append(select);}
@@ -28,7 +36,7 @@ export async function initializeDashboard(openAnalysis){
   }
   function replaceList(key,build){const list=sections[key].list,scroll=list.scrollTop;const focus=document.activeElement?.dataset?.key;list.replaceChildren();build(list);list.scrollTop=scroll;if(focus){const match=[...list.querySelectorAll("[data-key]")].find(e=>e.dataset.key===focus);match?.focus({preventScroll:true});}}
   const analysisLimits={mine:100,all:100};
-  function analysisList(key){replaceList(key,list=>{let entries=data.analyses.filter(a=>(key!=="mine"||a.owner.id===state.user.id)&&(prefs[key].archived||!a.archived)&&a.name.normalize().toLowerCase().includes(prefs[key].search.trim().normalize().toLowerCase()));let shown=0;const more=()=>{for(const a of entries.slice(shown,analysisLimits[key])){const row=node("div",null,"dashboard-row"),open=button(a.name,()=>openAnalysis(a.id));open.dataset.key=`${key}:${a.id}`;row.append(open,node("p",`${a.owner.name} · ${new Date(a.created*1000).toLocaleString()} · ${a.archived?"Archived":"Active"}`,"dashboard-meta"));list.append(row);}shown=analysisLimits[key];if(shown<entries.length){const next=button("Show more",()=>{next.remove();analysisLimits[key]+=100;more();});list.append(next);}};if(!entries.length)empty(list,"No analyses match this view.");else more();});}
+  function analysisList(key){replaceList(key,list=>{let entries=data.analyses.filter(a=>(key!=="mine"||a.owner.id===state.user.id)&&(prefs[key].archived||!a.archived)&&a.name.normalize().toLowerCase().includes(prefs[key].search.trim().normalize().toLowerCase()));let shown=0;const more=()=>{for(const a of entries.slice(shown,analysisLimits[key])){const row=node("div",null,"dashboard-row");row.append(openButton(a.name,`${key}:${a.id}`,()=>openAnalysis(a.id)),cell(a.owner.name),dateCell(new Date(a.created*1000)),cell(a.archived?"Archived":"Active"));list.append(row);}shown=analysisLimits[key];if(shown<entries.length){const next=moreButton("Show more",()=>{next.remove();analysisLimits[key]+=100;more();});list.append(next);}};if(!entries.length)empty(list,"No analyses match this view.");else{list.append(head("Name","Owner","Created","State"));more();}});}
   const openTarget=(aid,item)=>openReviewTarget(openAnalysis,aid,item.entity);
   let assignedLimit=100;
   const themeLimits=new Map();
@@ -45,16 +53,15 @@ export async function initializeDashboard(openAnalysis){
         for(const parent of parents){
           if(++groups>assignedLimit)continue;
           const child=items.find(i=>i.parent===parent);const cluster=items.find(i=>i.entity===parent)||{...child,entity:parent,label:child.parentLabel,incidents:child.parentIncidents,contextOnly:true};
+          if(lastAnalysis===null)list.append(head("Cluster / theme","Status","Incidents"));
           if(lastAnalysis!==a.id){list.append(node("h4",a.name+(a.archived?" (Archived)":"")));lastAnalysis=a.id;}
-          const key=`${a.id}:${parent}`,details=node("details"),summary=node("summary",`Cluster ${parent} — ${cluster.label}`);
-          summary.append(node("span",` · ${statusLabels[cluster.status]||cluster.status} · ${cluster.incidents.toLocaleString()} incidents`,"dashboard-meta"));
+          const key=`${a.id}:${parent}`,details=node("details"),summary=node("summary");
+          summary.append(cell(`Cluster ${parent} — ${cluster.label}`,"dashboard-title"),cell(statusLabels[cluster.status]||cluster.status),count(cluster.incidents));
           summary.dataset.key=`group:${key}`;details.open=prefs.expanded.includes(key);details.append(summary);
           const children=node("div");details.append(children);let rendered=false;
           const row=(item,theme=false)=>{
             const el=node("div",null,`dashboard-row${theme?" dashboard-theme":""}`);
-            const open=button(`${theme?"Theme":"Cluster"} ${item.entity} — ${item.label}`,()=>openTarget(a.id,item));
-            open.dataset.key=`assigned:${a.id}:${item.entity}`;
-            el.append(open,node("p",`${statusLabels[item.status]||item.status} · ${item.incidents.toLocaleString()} incidents`,"dashboard-meta"));return el;
+            el.append(openButton(`${theme?"Theme":"Cluster"} ${item.entity} — ${item.label}`,`assigned:${a.id}:${item.entity}`,()=>openTarget(a.id,item)),cell(statusLabels[item.status]||item.status),count(item.incidents));return el;
           };
           function renderChildren(){
             rendered=true;children.replaceChildren();
@@ -63,7 +70,7 @@ export async function initializeDashboard(openAnalysis){
             const themes=matching.filter(i=>i.parent===parent&&i.entity!==parent).sort((x,y)=>Number(x.entity.split(":")[1])-Number(y.entity.split(":")[1]));
             const limit=themeLimits.get(key)||100;
             for(const theme of themes.slice(0,limit))children.append(row(theme,true));
-            if(themes.length>limit)children.append(button("Show more themes",()=>{themeLimits.set(key,limit+100);renderChildren();}));
+            if(themes.length>limit)children.append(moreButton("Show more themes",()=>{themeLimits.set(key,limit+100);renderChildren();}));
           }
           if(details.open)renderChildren();
           details.ontoggle=()=>{
@@ -76,11 +83,11 @@ export async function initializeDashboard(openAnalysis){
         }
       }
       if(!groups)empty(list,"No assigned work matches this view.");
-      if(groups>assignedLimit)list.append(button("Show more assigned clusters",()=>{assignedLimit+=100;assignedList();}));
+      if(groups>assignedLimit)list.append(moreButton("Show more assigned clusters",()=>{assignedLimit+=100;assignedList();}));
     });
   }
   async function openJob(original){const latest=(await json("/api/jobs")).find(j=>j.id===original.id);if(!latest)throw Error("This job is no longer available.");if(latest.metadata?.analysisId)return openAnalysis(latest.metadata.analysisId);if(latest.state==="finished"){state.analysisId=null;return loadResult(latest.id);}if(["queued","running"].includes(latest.state))return listenForProgress(latest.id);await noticeDialog(latest.error||`Job ${latest.state}. Use Resubmit to run it again.`);}
-  function jobsList(){replaceList("jobs",list=>{if(!jobs.length)return empty(list,"You have no retained jobs.");for(const job of jobs){const row=node("div",null,"dashboard-row");const open=button(`${new Date(job.created).toLocaleString()} — ${job.state}`,()=>openJob(job));open.dataset.key=`job:${job.id}`;row.append(open,node("p",jobSummaryText(job),"dashboard-meta"));if(job.expires)row.append(node("p",`Available until ${new Date(job.expires*1000).toLocaleString()}`,"dashboard-meta"));if(job.error)row.append(node("p",job.error,"dashboard-error"));const operation=jobAction(job);if(operation){const action=button(operation==="cancel"?"Cancel":"Resubmit",async()=>{await json(`/api/jobs/${job.id}/${operation}`,post({}));await refresh();});if(operation==="resubmit"&&!job.input){action.disabled=true;action.title="The original input is no longer available.";}row.append(action);}list.append(row);}});}
+  function jobsList(){replaceList("jobs",list=>{if(!jobs.length)return empty(list,"You have no retained jobs.");list.append(head("Created","State","Details","Available until",""));for(const job of jobs){const row=node("div",null,"dashboard-row");const created=new Date(job.created),open=openButton(shortDate(created),`job:${job.id}`,()=>openJob(job));open.title=created.toLocaleString();row.append(open,cell(job.state),cell(jobSummaryText(job)),job.expires?dateCell(new Date(job.expires*1000)):cell("—"));const operation=jobAction(job);if(!operation)row.append(node("span"));else{const action=button(operation==="cancel"?"Cancel":"Resubmit",async()=>{await json(`/api/jobs/${job.id}/${operation}`,post({}));await refresh();});if(operation==="resubmit"&&!job.input){action.disabled=true;action.title="The original input is no longer available.";}action.className="dashboard-action";row.append(action);}if(job.error)row.append(cell(job.error,"dashboard-error"));list.append(row);}});}
   async function fetchData(){
     const result={analyses:[],assigned:[]};let offset=0;
     do{const page=await json(`/api/dashboard/data?offset=${offset}`);result.analyses.push(...page.analyses);result.assigned.push(...page.assigned);offset=page.nextOffset;}while(offset!=null);
