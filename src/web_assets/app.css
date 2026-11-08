@@ -21,13 +21,8 @@
   --active: #e9e9e9;
   --danger: #b00000;
   --list-link: var(--ink);
-  /* Chart hues are separate from the accent so lines stay distinguishable. */
-  --series-0: #d40000;
-  --series-1: #1f6fb2;
-  --series-2: #b87400;
-  --series-3: #0f8a6d;
-  --series-4: #7a4fc0;
-  --series-5: #d4569e;
+  /* Bars rest in neutral gray (4.5:1 on white) and take the accent on hover, like links. */
+  --series-bar: #767676;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -43,12 +38,7 @@
     --active: #263d36;
     --danger: #e06f66;
     --list-link: var(--accent);
-    --series-0: var(--accent);
-    --series-1: var(--ink);
-    --series-2: var(--danger);
-    --series-3: var(--muted);
-    --series-4: var(--accent-dark);
-    --series-5: var(--ink);
+    --series-bar: var(--muted);
   }
 }
 
@@ -1196,32 +1186,54 @@ footer {
 
 /* Series controls inherit application typography and system color variables. */
 #seriesRoot > div { margin-bottom: 14px; }
-.series-catalog, .series-legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.series-catalog { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
 .series-dialog { width: min(850px, 94vw); }
 .series-dialog-body { max-height: 65vh; overflow: auto; }
 .series-dialog-body .field { margin: 10px 0; }
 .series-dialog select[multiple] { min-height: 120px; }
 .series-impact li { margin-bottom: 10px; }
-.series-table-wrap { max-height: 55vh; overflow: auto; margin-top: 12px; }
-.series-table-wrap td, .series-table-wrap th { min-width: 170px; vertical-align: top; }
-.series-table-wrap td:first-child { min-width: 220px; }
-.series-table-wrap td small { display: block; color: var(--muted); margin: 5px 0; }
-.series-table-wrap td button { margin: 3px; }
 .series-review-row { display: grid; gap: 6px; border-bottom: 1px solid var(--line); padding: 12px 0; }
-.series-chart { width: 100%; max-height: 300px; color: var(--ink); background: var(--panel); }
-.series-chart text { fill: var(--muted); font: inherit; font-size: var(--text-xs); }
-.series-axis { stroke: var(--muted); fill: none; }
-.series-line { stroke: currentColor; stroke-width: 2; }
-circle.series-line { fill: currentColor; }
-.series-color-0 { --series-color: var(--series-0); }
-.series-color-1 { --series-color: var(--series-1); }
-.series-color-2 { --series-color: var(--series-2); }
-.series-color-3 { --series-color: var(--series-3); }
-.series-color-4 { --series-color: var(--series-4); }
-.series-color-5 { --series-color: var(--series-5); }
-.series-line, .series-key { color: var(--series-color); }
-.series-key { border-bottom: 2px solid var(--series-color); }
-@media (prefers-color-scheme: light) { .series-key { color: var(--ink); } }
+
+/* Small multiples: one bar chart per selected tracked problem. */
+.series-chart-tools { align-items: end; }
+.series-chart-tools > .job-metadata { margin: 0 0 8px auto; }
+.series-group-prompt p { margin: 0 0 8px; }
+.series-group-prompt .toolbar { margin: 0; }
+.series-charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.series-chart-card { position: relative; min-width: 0; margin: 0; padding: 10px 12px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.series-chart-card figcaption { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: var(--text-sm); line-height: var(--leading-tight); }
+.series-chart-card figcaption strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.series-chart-card figcaption .job-metadata { flex: none; margin: 0; }
+.series-bars { display: block; width: 100%; height: auto; margin-top: 6px; overflow: visible; }
+.series-bars text { fill: var(--muted); font: inherit; font-size: 10px; font-variant-numeric: tabular-nums; }
+.series-axis { stroke: var(--muted); stroke-width: 1; }
+.series-grid { stroke: var(--line); stroke-width: 1; }
+.series-bar { fill: var(--series-bar); }
+.series-unknown { stroke: var(--muted); stroke-width: 2; stroke-dasharray: 2 2; }
+.series-hit { fill: transparent; }
+.series-bar-group:hover .series-bar, .series-bar-group:focus-visible .series-bar { fill: var(--accent); }
+.series-bar-group:hover .series-hit { fill: var(--active); fill-opacity: .5; }
+.series-bar-group.clickable { cursor: pointer; }
+.series-bar-group:focus-visible { outline: none; }
+.series-bar-group:focus-visible .series-hit { stroke: var(--accent); stroke-width: 2; }
+.series-tip { position: absolute; top: 34px; z-index: 2; max-width: 260px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); box-shadow: 0 4px 14px #0002; color: var(--ink); font-size: var(--text-xs); pointer-events: none; white-space: normal; }
+
+/* Dense selection table: the accessible source of truth behind the charts. */
+.series-table-head { margin-top: 18px; }
+.series-table-head h3 { margin: 0; }
+.series-table-head .job-metadata { margin: 0; }
+.series-table-wrap { max-height: 55vh; overflow: auto; margin-top: 8px; }
+.series-table th, .series-table td { padding: 3px 8px; vertical-align: middle; }
+.series-table td.series-name { min-width: 240px; max-width: 420px; }
+.series-table .series-number { text-align: right; font-variant-numeric: tabular-nums; }
+.series-table th.series-number { min-width: 110px; }
+.series-table .series-check { width: 1%; text-align: center; }
+.series-table tbody tr:hover td { background: var(--active); }
+.series-table td small { display: block; color: var(--muted); font-size: var(--text-xs); }
+.series-unknown-text { color: var(--muted); }
+#series .series-table button.series-inline { min-height: 0; margin: 0 0 0 8px; padding: 0; border: 0; background: none; color: var(--muted); font-size: var(--text-xs); }
+#series .series-table button.series-count { margin: 0; color: var(--list-link); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+#series .series-table button.series-inline:hover:not(:disabled) { color: var(--accent); text-decoration: underline; }
 #series details { margin: 12px 0; }
 #series .toolbar { flex-wrap: wrap; }
 @media (max-width: 720px) { #series .section-head { align-items: stretch; flex-direction: column; gap: 10px; } }

@@ -2,7 +2,7 @@ import {state} from "./state.js";
 import {request} from "./api.js";
 import {askDialog,noticeDialog,showStep} from "./ui.js";
 import {openReviewTarget} from "./target-navigation.js";
-import {renderSeriesChart} from "./series-chart.js";
+import {renderBarChart} from "./series-chart.js";
 
 const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
 const post=value=>({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
@@ -10,6 +10,16 @@ async function api(url,options){const r=await request(url,options),v=await r.jso
 function button(text,action){const b=el("button",text);b.type="button";b.onclick=async()=>{b.disabled=true;try{await action();}catch(e){await noticeDialog(e.message);}finally{if(b.isConnected)b.disabled=false;}};return b;}
 function field(label,input){const n=el("div",null,"field"),caption=el("label",label);input.id||=`series-field-${crypto.randomUUID()}`;caption.htmlFor=input.id;n.append(caption,input);return n;}
 function input(type,value=""){const n=el("input");n.type=type;n.value=value;return n;}
+const MAX_CHARTS=12;
+const rowTotal=r=>r.cells.reduce((sum,c)=>sum+(c.count||0),0);
+// Highest total first; the sort is stable, so ties keep the series order.
+const rankRows=rows=>[...rows].sort((a,b)=>rowTotal(b)-rowTotal(a));
+const shortDate=iso=>new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined,{day:"numeric",month:"short",timeZone:"UTC"});
+const longDate=iso=>new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric",timeZone:"UTC"});
+// Per-viewer choice of how a series is grouped: "" (automatic), "period" or "column:<header>".
+const groupingKey=sid=>`series-grouping:${sid}`;
+function storedGrouping(sid){try{return localStorage.getItem(groupingKey(sid))||"";}catch{return "";}}
+function storeGrouping(sid,value){try{if(value)localStorage.setItem(groupingKey(sid),value);else localStorage.removeItem(groupingKey(sid));}catch{}}
 function select(options,value){const n=el("select");for(const [id,label]of options){const o=el("option",label);o.value=id;n.append(o);}if(value!=null)n.value=value;return n;}
 function modal(title,build,{confirmLabel="Continue",cancel=true}={}){return new Promise(resolve=>{
   const dialog=el("dialog",null,"app-dialog series-dialog"),form=el("form"),heading=el("h2",title);heading.id=`series-${crypto.randomUUID()}`;dialog.setAttribute("aria-labelledby",heading.id);
@@ -55,7 +65,7 @@ export function changes(before,after){
 }
 export function initializeSeries(openAnalysis){
   const root=document.getElementById("seriesRoot");if(!root)return;
-  let current=null,active=false,busy=false,again=false,generation=0,rows=[],selected=new Set(),plotInitialized=false,percentage=false;
+  let current=null,active=false,busy=false,again=false,generation=0,rows=[],ranked=[],selected=new Set(),plotInitialized=false,percentage=false,weekly=null,weeklyError="";
   let search="",archived=false,catalogOffset=null,taskTimer=null;
   const catalog=el("div"),detail=el("div"),message=el("p",null,"job-metadata");message.setAttribute("role","status");const intro=el("div",null,"series-start dashboard-panel");
   intro.append(el("h3","Compare saved analyses across periods"),el("p","1. Save each analysis centrally.  2. Create or open a series.  3. Add a saved analysis, enter its dates, then follow the matching wizard."));
@@ -80,14 +90,27 @@ export function initializeSeries(openAnalysis){
     try{
       const [s,tasks]=await Promise.all([api(`/api/series/${sid}`),api(`/api/series/${sid}/tasks`)]);let collected=[],offset=0;
       do{const page=await api(`/api/series/${sid}/trends?offset=${offset}`);if(page.revision!==s.revision){again=true;return;}collected.push(...page.rows);offset=page.nextOffset;}while(offset!=null);
+      if(s.periods.length)await loadWeekly(sid);
       if(token!==generation||sid!==current?.id)return;
       const scroll=detail.querySelector(".series-table-wrap")?.scrollLeft||0;
       const expanded=new Set([...detail.querySelectorAll("details[open][data-key]")].map(n=>n.dataset.key));
-      current=s;rows=collected;if(!plotInitialized&&rows.length){selected=new Set(rows.slice(0,6).map(r=>r.problem.id));plotInitialized=true;}
+      current=s;rows=collected;ranked=rankRows(rows);if(!plotInitialized&&rows.length){selected=new Set(ranked.slice(0,6).map(r=>r.problem.id));plotInitialized=true;}
       render(tasks);for(const d of detail.querySelectorAll("details[data-key]"))d.open=expanded.has(d.dataset.key);
       const table=detail.querySelector(".series-table-wrap");if(table)table.scrollLeft=scroll;
       clearTimeout(taskTimer);if(active&&tasks.some(t=>["running","queued"].includes(t.state)))taskTimer=setTimeout(()=>refresh().catch(report),1500);
     }finally{busy=false;if(again){again=false;queueMicrotask(()=>refresh().catch(report));}}
+  }
+  // Weekly counts by the chosen column, or by an "Opened"/"Opened at" column the server finds.
+  async function loadWeekly(sid){
+    const stored=storedGrouping(sid),column=stored.startsWith("column:")?stored.slice(7):"";
+    const fetchWeekly=name=>api(`/api/series/${sid}/weekly?column=${encodeURIComponent(name)}`);
+    try{weekly=await fetchWeekly(column);weeklyError="";}
+    catch(e){weeklyError=`Tickets cannot be grouped by week: ${e.message}`;weekly=null;if(column){storeGrouping(sid,"");try{weekly=await fetchWeekly("");}catch{}}}
+  }
+  function groupingMode(){
+    if(storedGrouping(current.id)==="period")return{type:"period"};
+    if(weekly?.weekly&&weekly.column)return{type:"week",column:weekly.column};
+    return{type:"period",fallback:true};
   }
   async function addPeriod(replace){
     const base=current.revision,sid=current.id;
@@ -221,13 +244,68 @@ export function initializeSeries(openAnalysis){
     const periods=el("details");periods.dataset.key="periods";periods.append(el("summary",`Periods (${current.periods.length})`));for(const p of current.periods){const row=el("div",null,"dashboard-row");row.append(el("span",`${p.start} – ${p.end} · ${p.name} · ${p.total.toLocaleString()} processed records`));if(edit())row.append(editButton("Replace",()=>addPeriod(p)));periods.append(row);}detail.append(periods);
     if(current.periods.length===1)detail.append(el("p","Your first period is saved. Click Add saved analysis to add a second period and compare cluster counts.","series-next-step"));
     if(!current.periods.length){detail.append(el("p","Next: click Add saved analysis above, choose an analysis and its dates, then follow the matching wizard.","dashboard-empty"));return;}
-    const chartTools=el("div",null,"toolbar"),metric=select([["count","Record count"],["percent","Percentage"]],percentage?"percent":"count");metric.onchange=()=>{percentage=metric.value==="percent";draw();};chartTools.append(field("Chart measure",metric));detail.append(chartTools);
-    const legend=el("details");legend.dataset.key="legend";legend.append(el("summary","Choose chart lines (up to 12)"));const legendList=el("div",null,"series-legend");for(const r of rows){const check=input("checkbox");check.checked=selected.has(r.problem.id);check.onchange=()=>{if(check.checked&&selected.size>=12){check.checked=false;noticeDialog("Select up to 12 chart lines.");return;}check.checked?selected.add(r.problem.id):selected.delete(r.problem.id);draw();};legendList.append(field(r.problem.name,check));}legend.append(legendList);detail.append(legend);
-    const chart=el("div"),chartNames=el("div",null,"series-legend");detail.append(chart,chartNames);function draw(){const chosen=rows.filter(r=>selected.has(r.problem.id));chart.replaceChildren(renderSeriesChart(current.periods,chosen,percentage,(cell,index)=>openCell(cell,current.periods[index]).catch(report)));chartNames.replaceChildren();chosen.forEach((r,i)=>chartNames.append(el("span",`${i+1}. ${r.problem.name}`,`series-key series-color-${i%6}`)));}draw();
-    const wrap=el("div",null,"table-wrap series-table-wrap"),table=el("table"),thead=el("thead"),tr=el("tr");tr.append(el("th","Tracked problem"));for(const p of current.periods)tr.append(el("th",`${p.start} – ${p.end}`));thead.append(tr);table.append(thead);const tbody=el("tbody");table.append(tbody);let shown=0;const more=button("More tracked problems",()=>appendRows());
-    function appendRows(){for(const r of rows.slice(shown,shown+100)){const tr=el("tr"),name=el("td");name.append(el("span",r.problem.name));if(edit())name.append(editButton("Rename",async()=>{const value=await askDialog("Rename tracked problem","Analysis labels remain unchanged.",{value:r.problem.name,label:"Problem name"});if(value)await send({type:"renameProblem",problem:r.problem.id,name:value});}));tr.append(name);for(const c of r.cells){const td=el("td"),p=current.periods.find(p=>p.id===c.period);const text=c.count==null?"No matched cluster":`${c.count.toLocaleString()} (${c.percent==null?"N/A":c.percent.toFixed(1)+"%"})`;
-      if(c.clusters.length)td.append(button(text,()=>openCell(c,p)));else{td.append(el("span",text));if(c.zero)td.append(el("small",`Confirmed by ${c.zero.actor.name} · ${new Date(c.zero.time*1000).toLocaleString()}`));if(edit())td.append(button(c.zero?"Revoke zero":"Confirm zero",()=>send({type:"zero",period:p.id,problem:r.problem.id,confirmed:!c.zero})));}tr.append(td);}tbody.append(tr);}shown+=100;more.hidden=shown>=rows.length;}
-    appendRows();wrap.append(table);detail.append(wrap,more);
+    const chartTools=el("div",null,"toolbar series-chart-tools"),groupBy=el("select"),metric=select([["count","Ticket count"],["percent","Percentage of tickets"]],percentage?"percent":"count"),counter=el("span",null,"job-metadata");
+    metric.onchange=()=>{percentage=metric.value==="percent";drawCharts();};
+    groupBy.onchange=async()=>{storeGrouping(sid,groupBy.value);if(groupBy.value!=="period")await loadWeekly(sid);if(current?.id===sid)drawCharts();};
+    chartTools.append(field("Group tickets by",groupBy),field("Chart measure",metric),counter);
+    const prompt=el("div",null,"series-next-step series-group-prompt"),charts=el("div",null,"series-charts series-chart");prompt.setAttribute("role","status");
+    detail.append(chartTools,prompt,charts);
+    // Date-typed columns first; without any, every shared column is offered.
+    const columnChoices=()=>{const all=weekly?.columns||[],dates=all.filter(c=>c.date);return(dates.length?dates:all).map(c=>c.name);};
+    function drawCharts(){
+      const m=groupingMode(),choices=columnChoices();
+      groupBy.replaceChildren(...choices.map(name=>new Option(`Week of ${name}`,`column:${name}`)),new Option("Analysis period","period"));
+      groupBy.value=m.type==="week"?`column:${m.column}`:"period";
+      prompt.replaceChildren();prompt.hidden=!m.fallback;
+      if(m.fallback){
+        prompt.append(el("p",weeklyError||(choices.length?"None of this series’ analyses has an “Opened” or “Opened at” column, so each bar shows one analysis period. Choose the date column to group tickets by week:":"The analyses in this series share no column to group by week, so each bar shows one analysis period.")));
+        const actions=el("div",null,"toolbar"),column=select(choices.map(name=>[`column:${name}`,name]));column.setAttribute("aria-label","Column to group by");
+        if(choices.length)actions.append(column,button("Group by week",async()=>{storeGrouping(sid,column.value);await loadWeekly(sid);if(current?.id===sid)drawCharts();}));
+        actions.append(button("Keep grouping by analysis",()=>{storeGrouping(sid,"period");drawCharts();}));prompt.append(actions);
+      }
+      const chosen=ranked.filter(r=>selected.has(r.problem.id));
+      charts.replaceChildren(...chosen.map(chartCard));if(!chosen.length)charts.append(el("p","Select tracked problems in the table below to chart them.","dashboard-empty"));
+      counter.textContent=`${selected.size} of ${MAX_CHARTS} charts`;
+    }
+    function buckets(r){
+      const cell=p=>r.cells.find(c=>c.period===p.id),m=groupingMode();
+      if(m.type==="week"){
+        const w=weekly.weekly,data=w.rows[r.problem.id]||{counts:[]};
+        return w.weeks.map((start,i)=>{
+          const end=new Date(Date.parse(`${start}T00:00:00Z`)+6*86400000).toISOString().slice(0,10),count=data.counts[i]||0;
+          const overlapping=current.periods.filter(p=>p.start<=end&&p.end>=start);
+          // A week covered only by periods without a matched cluster is unknown, not zero.
+          const unknown=!count&&overlapping.some(p=>cell(p)?.count==null);
+          const target=[...overlapping,...(count?current.periods:[])].find(p=>cell(p)?.clusters.length);
+          const share=w.totals[i]?100*count/w.totals[i]:0;
+          return{label:shortDate(start),value:unknown?null:percentage?share:count,target:target&&{p:target,c:cell(target)},clickable:!!target,
+            tooltip:`Week of ${longDate(start)}: ${unknown?"no matched cluster":`${count.toLocaleString()} tickets (${share.toFixed(1)}% of ${w.totals[i].toLocaleString()})`}`};
+        });
+      }
+      return current.periods.map(p=>{const c=cell(p),value=percentage?c?.percent:c?.count;
+        return{label:shortDate(p.start),value:value??null,target:{p,c},clickable:!!c?.clusters.length,
+          tooltip:`${p.name} (${p.start} – ${p.end}): ${c?.count==null?"no matched cluster":`${c.count.toLocaleString()} tickets${c.percent==null?"":` (${c.percent.toFixed(1)}%)`}${c.zero?", confirmed zero":""}`}`};});
+    }
+    function chartCard(r){
+      const card=el("figure",null,"series-chart-card"),caption=el("figcaption"),data=buckets(r),tip=el("div",null,"series-tip");tip.hidden=true;
+      const total=groupingMode().type==="week"?(weekly.weekly.rows[r.problem.id]?.counts||[]).reduce((a,b)=>a+b,0):rowTotal(r),undated=groupingMode().type==="week"?weekly.weekly.rows[r.problem.id]?.undated||0:0;
+      caption.append(el("strong",r.problem.name),el("span",`${total.toLocaleString()} tickets${undated?` · ${undated.toLocaleString()} without a date`:""}`,"job-metadata"));
+      const chart=renderBarChart(data,{percentage,label:`${r.problem.name}, ${groupingMode().type==="week"?"tickets per week":"tickets per analysis period"}. Exact counts are in the table below.`,
+        onBar:b=>openCell(b.target.c,b.target.p).catch(report),onHover:(b,x)=>{tip.hidden=!b;if(b){tip.textContent=b.tooltip;tip.style.left=`${x*100}%`;tip.style.transform=`translateX(-${x*100}%)`;}}});
+      card.append(caption,chart,tip);return card;
+    }
+    const tableHead=el("div",null,"section-head series-table-head");tableHead.append(el("h3","Tracked problems"),el("span",`Select up to ${MAX_CHARTS} to chart. Sorted by total tickets.`,"job-metadata"));detail.append(tableHead);
+    const wrap=el("div",null,"table-wrap series-table-wrap"),table=el("table",null,"series-table"),thead=el("thead"),tr=el("tr");
+    tr.append(el("th","Chart","series-check"),el("th","Tracked problem"),el("th","Total","series-number"));for(const p of current.periods){const th=el("th",`${p.start} – ${p.end}`,"series-number");th.title=p.name;tr.append(th);}
+    thead.append(tr);table.append(thead);const tbody=el("tbody");table.append(tbody);let shown=0;const more=button("More tracked problems",()=>appendRows()),checks=[];
+    function limitChecks(){for(const c of checks){c.disabled=!c.checked&&selected.size>=MAX_CHARTS;c.title=c.disabled?`Up to ${MAX_CHARTS} charts. Clear another first.`:"";}}
+    function appendRows(){for(const r of ranked.slice(shown,shown+100)){const tr=el("tr"),pick=el("td",null,"series-check"),check=input("checkbox"),name=el("td",null,"series-name");
+      check.checked=selected.has(r.problem.id);check.setAttribute("aria-label",`Chart ${r.problem.name}`);check.onchange=()=>{check.checked?selected.add(r.problem.id):selected.delete(r.problem.id);tr.classList.toggle("selected",check.checked);limitChecks();drawCharts();};checks.push(check);pick.append(check);tr.classList.toggle("selected",check.checked);
+      name.append(el("span",r.problem.name));if(edit()){const rename=editButton("Rename",async()=>{const value=await askDialog("Rename tracked problem","Analysis labels remain unchanged.",{value:r.problem.name,label:"Problem name"});if(value)await send({type:"renameProblem",problem:r.problem.id,name:value});});rename.classList.add("series-inline");name.append(rename);}
+      tr.append(pick,name,el("td",rowTotal(r).toLocaleString(),"series-number"));
+      for(const c of r.cells){const td=el("td",null,"series-number"),p=current.periods.find(p=>p.id===c.period);const text=c.count==null?"No matched cluster":`${c.count.toLocaleString()} (${c.percent==null?"N/A":c.percent.toFixed(1)+"%"})`;
+      if(c.clusters.length){const open=button(text,()=>openCell(c,p));open.classList.add("series-inline","series-count");td.append(open);}else{td.append(el("span",text,c.count==null?"series-unknown-text":null));if(c.zero)td.append(el("small",`Confirmed by ${c.zero.actor.name} · ${new Date(c.zero.time*1000).toLocaleString()}`));if(edit()){const zero=button(c.zero?"Revoke zero":"Confirm zero",()=>send({type:"zero",period:p.id,problem:r.problem.id,confirmed:!c.zero}));zero.classList.add("series-inline");td.append(zero);}}tr.append(td);}tbody.append(tr);}shown+=100;more.hidden=shown>=ranked.length;limitChecks();}
+    appendRows();wrap.append(table);detail.append(wrap,more);drawCharts();
     const review=el("details");review.dataset.key="review";const occurrences=current.periods.flatMap(p=>p.occurrences.map(o=>({p,o})));review.append(el("summary",`Cluster associations (${occurrences.filter(v=>!v.o.problem).length} pending)`));let limit=0;const reviewMore=button("More clusters",()=>appendReview());
     function appendReview(){for(const {p,o} of occurrences.slice(limit,limit+100)){const row=el("div",null,"series-review-row");const problem=current.problems.find(v=>v.id===o.problem);row.append(el("strong",`${p.start} · Cluster ${o.cluster} — ${o.label}`),el("span",`${o.count} records · ${problem?.name||"Pending"} · ${o.reason}`));const actions=el("div",null,"toolbar");actions.append(button("Open cluster",()=>openReviewTarget(openAnalysis,p.analysis,o.cluster)));if(edit()){actions.append(editButton("Review link",()=>link(p,o)));if(o.manual||o.replacement)actions.append(editButton("Reopen matching",()=>send({type:"reopen",period:p.id,cluster:o.cluster})));for(const c of o.candidates.slice(0,3))actions.append(button(`Reject ${current.problems.find(p=>p.id===c.problem)?.name||"candidate"}`,()=>send({type:"reject",period:p.id,cluster:o.cluster,problem:c.problem,reopen:false})));for(const rejected of o.rejected)actions.append(button(`Reconsider ${current.problems.find(p=>p.id===rejected)?.name||"candidate"}`,()=>send({type:"reject",period:p.id,cluster:o.cluster,problem:rejected,reopen:true})));}row.append(actions);review.insertBefore(row,reviewMore);}limit+=100;reviewMore.hidden=limit>=occurrences.length;}
     review.append(reviewMore);appendReview();detail.append(review);

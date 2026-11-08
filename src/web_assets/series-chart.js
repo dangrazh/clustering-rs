@@ -1,29 +1,37 @@
-// Missing observations remain gaps. The adjacent table is the accessible source of truth.
-export function renderSeriesChart(periods,rows,percentage=false,onCell=null){
+// One small bar chart per tracked problem. The table below the charts is the accessible source of truth.
+// Each bucket: {label, tooltip, value (null = unknown), clickable}.
+const W=360,H=150,LEFT=40,RIGHT=8,TOP=12,BOTTOM=22,PLOT=H-TOP-BOTTOM;
+
+// Round the axis maximum up to 1, 2 or 5 × 10^n so gridline labels stay readable.
+export function niceMax(value){
+  if(!(value>0))return 1;const power=10**Math.floor(Math.log10(value)),step=[1,2,2.5,5,10].find(s=>s*power>=value);
+  return step*power;
+}
+// Bar with a 4px rounded data end, anchored square on the baseline.
+function barPath(x,y,width,height){
+  const r=Math.min(4,width/2,height);
+  return `M${x} ${y+height}V${y+r}Q${x} ${y} ${x+r} ${y}H${x+width-r}Q${x+width} ${y} ${x+width} ${y+r}V${y+height}Z`;
+}
+export function renderBarChart(buckets,{percentage=false,label="",onBar=null,onHover=null}={}){
   const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");
-  svg.setAttribute("viewBox","0 0 900 240");svg.setAttribute("role",onCell?"group":"img");
-  svg.setAttribute("aria-label",`Cluster trends: ${percentage?"percentage of processed records":"record counts"}. Exact values and source links follow in the table.`);
-  svg.classList.add("series-chart");
-  const add=(tag,attrs,text)=>{const e=document.createElementNS(ns,tag);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,v);if(text!=null)e.textContent=text;svg.append(e);return e;};
-  if(!periods.length)return svg;
-  const times=periods.map(p=>Date.parse(`${p.start}T00:00:00Z`));
-  const min=Math.min(...times),span=Math.max(...times)-min||1;
-  const value=c=>percentage?c.percent:c.count;
-  const max=Math.max(1,...rows.flatMap(r=>r.cells.map(c=>value(c)||0)));
-  const x=i=>50+(times[i]-min)/span*790,y=v=>200-v/max*170;
-  add("path",{d:"M50 25V200H850",class:"series-axis"});
-  add("text",{x:4,y:30},percentage?`${max.toFixed(1)}%`:String(max));add("text",{x:20,y:204},"0");
-  add("text",{x:50,y:230},periods[0].start);if(periods.length>1)add("text",{x:850,y:230,"text-anchor":"end"},periods.at(-1).end);
-  rows.forEach((r,index)=>{
-    let d="",previous=false;
-    r.cells.forEach((c,i)=>{
-      const v=value(c);if(v==null){previous=false;return;}
-      const gap=i>0&&Date.parse(`${periods[i-1].end}T00:00:00Z`)+86400000<times[i];
-      d+=`${previous&&!gap?"L":"M"}${x(i)} ${y(v)} `;previous=true;
-      const dot=add("circle",{cx:x(i),cy:y(v),r:4,class:`series-line series-color-${index%6}`});
-      const title=document.createElementNS(ns,"title");title.textContent=`${r.problem.name}: ${v}${percentage?"%":""} (${periods[i].start} – ${periods[i].end})${c.zero?" — confirmed zero":""}`;dot.append(title);
-      if(onCell&&c.clusters?.length){dot.setAttribute("role","button");dot.setAttribute("tabindex","0");dot.setAttribute("aria-label",`Open ${title.textContent}`);dot.style.cursor="pointer";dot.addEventListener("click",()=>onCell(c,i));dot.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();onCell(c,i);}});}
-    });
-    add("path",{d,class:`series-line series-color-${index%6}`,fill:"none","stroke-dasharray":index>=6?"6 3":"none"});
-  });return svg;
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);svg.setAttribute("role",onBar?"group":"img");svg.setAttribute("aria-label",label);
+  svg.classList.add("series-bars");
+  const add=(parent,tag,attrs,text)=>{const e=document.createElementNS(ns,tag);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,v);if(text!=null)e.textContent=text;parent.append(e);return e;};
+  const max=niceMax(Math.max(0,...buckets.map(b=>b.value??0))),y=v=>TOP+PLOT-v/max*PLOT,format=v=>percentage?`${Number(v.toFixed(1))}%`:v.toLocaleString();
+  for(const v of [0,max/2,max]){add(svg,"path",{d:`M${LEFT} ${y(v)}H${W-RIGHT}`,class:v?"series-grid":"series-axis"});add(svg,"text",{x:LEFT-6,y:y(v)+4,"text-anchor":"end"},format(v));}
+  if(!buckets.length)return svg;
+  const band=(W-LEFT-RIGHT)/buckets.length,width=Math.max(1,Math.min(48,band-2));
+  buckets.forEach((b,i)=>{
+    const x=LEFT+i*band,g=add(svg,"g",{class:"series-bar-group"});
+    if(b.value==null)add(g,"path",{d:`M${x+band/2-width/2} ${y(0)-1}H${x+band/2+width/2}`,class:"series-unknown"});
+    else if(b.value>0)add(g,"path",{d:barPath(x+band/2-width/2,y(b.value),width,y(0)-y(b.value)),class:"series-bar"});
+    // The hit target spans the whole column, so thin weekly bars stay easy to point at.
+    add(g,"rect",{x,y:TOP,width:band,height:PLOT,class:"series-hit"});
+    if(onHover){g.addEventListener("pointerenter",()=>onHover(b,(x+band/2)/W));g.addEventListener("pointerleave",()=>onHover(null));}
+    if(onBar&&b.clickable){g.setAttribute("role","button");g.setAttribute("tabindex","0");g.setAttribute("aria-label",`Open ${b.tooltip}`);g.classList.add("clickable");g.addEventListener("click",()=>onBar(b,i));g.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();onBar(b,i);}});}
+  });
+  // Label the first and last buckets, plus the middle one when there is room.
+  const ticks=[...new Set([0,buckets.length>4?Math.floor((buckets.length-1)/2):null,buckets.length-1].filter(i=>i!=null))];
+  for(const i of ticks){const anchor=buckets.length===1?"middle":i===0?"start":i===buckets.length-1?"end":"middle";const x=anchor==="start"?LEFT+i*band:anchor==="end"?LEFT+(i+1)*band:LEFT+(i+.5)*band;add(svg,"text",{x,y:H-6,"text-anchor":anchor},buckets[i].label);}
+  return svg;
 }

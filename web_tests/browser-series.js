@@ -37,7 +37,16 @@ try{
   await dialog.getByRole("button",{name:"Add and match",exact:true}).click();
   dialog=page.getByRole("dialog",{name:"Step 3 of 3 — Review matches and view trends"});await expect(dialog).toContainText("2 clusters matched",{timeout:30000});await dialog.getByRole("button",{name:"View updated chart",exact:true}).click();
   await expect(page.locator(".series-table-wrap tbody tr")).toHaveCount(2);
-  await expect(page.locator(".series-chart circle")).toHaveCount(2);
+  // The fixture has no Opened column: one chart per problem, one bar per analysis, and a prompt for a column.
+  await expect(page.locator(".series-chart-card")).toHaveCount(2);
+  await expect(page.locator(".series-chart-card .series-bar")).toHaveCount(2);
+  const prompt=page.locator(".series-group-prompt");
+  await expect(prompt).toContainText("Opened");await expect(prompt.getByLabel("Column to group by")).toBeVisible();
+  await expect(page.getByLabel("Chart Connectivity group 1")).toBeChecked();
+  await page.getByLabel("Chart Connectivity group 1").uncheck();await expect(page.locator(".series-chart-card")).toHaveCount(1);
+  await page.getByLabel("Chart Connectivity group 1").check();await expect(page.locator(".series-chart-card")).toHaveCount(2);
+  await prompt.getByRole("button",{name:"Keep grouping by analysis",exact:true}).click();await expect(prompt).toBeHidden();
+  await expect(page.getByLabel("Group tickets by")).toHaveValue("period");
   await expect(page.locator(".series-table-wrap")).toContainText("1,000 (83.3%)");
   await expect(page.locator(".series-table-wrap")).toContainText("200 (16.7%)");
   await page.getByRole("button",{name:"Competing series",exact:true}).click();
@@ -59,7 +68,7 @@ try{
   await expect(page.locator(".series-table-wrap")).toContainText("No matched cluster");
   await page.getByRole("button",{name:"Confirm zero",exact:true}).click();await expect(page.getByRole("button",{name:"Review proposal",exact:true}).first()).toBeVisible({timeout:30000});await page.getByRole("button",{name:"Review proposal",exact:true}).first().click();await page.getByRole("dialog",{name:"Review impact before saving"}).getByRole("button",{name:"Save to series",exact:true}).click();
   await expect(page.locator(".series-table-wrap")).toContainText("0 (0.0%)");await expect(page.locator(".series-table-wrap")).toContainText("Confirmed by Alice");
-  for(const mode of ["light","dark"]){await page.emulateMedia({colorScheme:mode});await expect(page.locator(".series-chart")).toHaveCSS("background-color",await page.locator(".topbar").evaluate(e=>getComputedStyle(e).backgroundColor));await page.screenshot({path:`target/ui-theme/series-trends-${mode}.png`,fullPage:true});}
+  for(const mode of ["light","dark"]){await page.emulateMedia({colorScheme:mode});await expect(page.locator(".series-chart-card").first()).toHaveCSS("background-color",await page.locator(".topbar").evaluate(e=>getComputedStyle(e).backgroundColor));await page.screenshot({path:`target/ui-theme/series-trends-${mode}.png`,fullPage:true});}
   const bobContext=await browser.newContext({locale:"en-US",colorScheme:"dark"});await bobContext.addCookies([{name:"app_session",value:process.env.FIXTURE_BOB,url:process.env.FIXTURE_URL}]);const bob=await bobContext.newPage();bob.on("pageerror",e=>errors.push(e.message));await bob.goto(process.env.FIXTURE_URL);await bob.locator('[data-step="series"]').click();await bob.getByRole("button",{name:"Monthly trends",exact:true}).click();await expect(bob.locator(".series-table-wrap")).toContainText("1,200 (100.0%)");
   // A concurrent edit invalidates a ready proposal, without losing its visible contents.
   await page.getByRole("button",{name:"Recalculate",exact:true}).click();await expect(page.getByRole("button",{name:"Review proposal",exact:true}).first()).toBeVisible({timeout:30000});await page.getByRole("button",{name:"Review proposal",exact:true}).first().click();

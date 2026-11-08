@@ -515,6 +515,11 @@ async fn series_http_historical_insertion_replacement_and_access() -> Result<()>
         for r in &mut run.processed_incidents {
             r.analysis_text = "payment card checkout rejected bank gateway".into();
         }
+        // Day/month/year with a time, as exported; the weekly view groups by it.
+        run.source.headers.push("Opened".into());
+        for (r, row) in run.source.rows.iter_mut().enumerate() {
+            row.push(format!("{:02}.0{}.2026 10:15", 1 + r % 14, 1 + i));
+        }
         let run = Arc::new(run);
         let review = ReviewData::new(&run)?;
         let artifact = state
@@ -707,5 +712,33 @@ async fn series_http_historical_insertion_replacement_and_access() -> Result<()>
         state.inner.store.analysis(&sources[0]).await?.archived,
         "Archived source remains unchanged"
     );
+    let weekly = |column: &str| {
+        client
+            .get(format!("{base}/api/series/{sid}/weekly?column={column}"))
+            .header("Cookie", format!("app_session={bob}"))
+            .send()
+    };
+    let automatic: Value = weekly("").await?.error_for_status()?.json().await?;
+    assert_eq!(automatic["column"], "Opened");
+    assert_eq!(automatic["automatic"], true);
+    assert!(automatic["columns"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"name":"Opened","date":true})));
+    let totals: u64 = automatic["weekly"]["totals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    assert_eq!(totals, 21 + 22, "Every processed record of both periods is dated");
+    assert_eq!(automatic["weekly"]["undated"], 0);
+    // The earliest date, Sunday 1 February, belongs to the week of Monday 26 January.
+    assert_eq!(automatic["weekly"]["weeks"][0], "2026-01-26");
+    let chosen: Value = weekly("Status").await?.error_for_status()?.json().await?;
+    assert_eq!(chosen["automatic"], false);
+    assert_eq!(chosen["weekly"]["undated"], 21 + 22);
+    assert!(chosen["weekly"]["weeks"].as_array().unwrap().is_empty());
+    assert!(!weekly("Missing").await?.status().is_success());
     Ok(())
 }

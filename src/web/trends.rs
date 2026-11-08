@@ -74,6 +74,9 @@ pub(super) async fn route(
                     .collect();
                 json!({"revision":s.revision,"rows":rows,"nextOffset":if offset as usize+100<s.problems.len(){Some(offset+100)}else{None}})
             }
+            (Method::GET, "weekly") => {
+                weekly(&state, sid, query.get("column").filter(|c| !c.is_empty())).await?
+            }
             (Method::GET, "history") => store.trend_history(sid, offset).await?,
             (Method::GET, "tasks") if parts.len() == 2 => store.trend_tasks(sid).await?,
             (Method::GET, "tasks" | "previews") => {
@@ -326,4 +329,89 @@ pub(super) async fn compute(state: &WebState, task: &mut Task) -> Result<()> {
 }
 fn profile_key(fingerprint: &str, model: &trends::Model) -> Result<String> {
     Ok(storage::digest(&serde_json::to_vec(&(fingerprint, model))?))
+}
+
+/// Weekly counts per tracked problem, grouped by a date column present in every
+/// period's analysis. Without a requested column, an "Opened"/"Opened at" column is
+/// used when one exists; otherwise only the available columns are returned.
+async fn weekly(state: &WebState, sid: &str, requested: Option<&String>) -> Result<serde_json::Value> {
+    let store = &state.inner.store;
+    let s = store.series(sid).await?;
+    let mut sources = vec![];
+    for p in &s.periods {
+        let info = store.analysis(&p.analysis).await?;
+        anyhow::ensure!(info.fingerprint == p.fingerprint, "Source fingerprint changed");
+        let artifact = state.inner.artifacts.load(&info.artifact).await?;
+        let types = store.column_types(&p.analysis, &artifact.run).await?;
+        sources.push((p.id.clone(), artifact, types));
+    }
+    let position = |run: &crate::model::AnalysisRun, name: &str| {
+        run.source.headers.iter().position(|h| h == name)
+    };
+    let common: Vec<String> = sources
+        .first()
+        .map(|(_, first, _)| {
+            first
+                .run
+                .source
+                .headers
+                .iter()
+                .filter(|h| sources.iter().all(|(_, a, _)| position(&a.run, h).is_some()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let columns: Vec<_> = common
+        .iter()
+        .map(|name| {
+            let date = sources.iter().all(|(_, a, types)| {
+                position(&a.run, name)
+                    .and_then(|i| types.get(i))
+                    .is_some_and(|t| t.data_type == crate::columns::DataType::DateTime)
+            });
+            json!({"name":name,"date":date})
+        })
+        .collect();
+    let column = match requested {
+        Some(name) => {
+            anyhow::ensure!(
+                common.contains(name),
+                "Column “{name}” is not present in every analysis of this series"
+            );
+            Some(name.clone())
+        }
+        None => common.iter().find(|h| trends::is_opened_column(h)).cloned(),
+    };
+    let weekly = match &column {
+        Some(name) => {
+            let name = name.clone();
+            let s = s.clone();
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    let mut dates = BTreeMap::new();
+                    for (period, artifact, types) in &sources {
+                        let run = &artifact.run;
+                        let index = position(run, &name).context("Missing column")?;
+                        let order = types.get(index).map(|t| t.date_order).unwrap_or_default();
+                        let parsed = run
+                            .processed_incidents
+                            .iter()
+                            .map(|r| {
+                                let date = run.source.rows[r.source_row_index]
+                                    .get(index)
+                                    .and_then(|v| crate::columns::date(v, order))
+                                    .and_then(|d| chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
+                                (r.source_row_index, date)
+                            })
+                            .collect();
+                        dates.insert(period.clone(), parsed);
+                    }
+                    trends::weekly(&s, &dates)
+                })
+                .await??,
+            )
+        }
+        None => None,
+    };
+    Ok(json!({"revision":s.revision,"columns":columns,"column":column,"automatic":requested.is_none()&&column.is_some(),"weekly":weekly}))
 }

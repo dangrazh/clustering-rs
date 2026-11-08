@@ -6,6 +6,7 @@ use crate::{
 #[cfg(test)]
 mod tests;
 use anyhow::{ensure, Context, Result};
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -804,4 +805,109 @@ pub fn cells(series: &Series, problem: &str) -> Vec<Cell> {
             }
         })
         .collect()
+}
+
+/// True for the column names that hold a ticket's opening date ("Opened", "opened_at", ...).
+pub fn is_opened_column(header: &str) -> bool {
+    let name = header
+        .to_lowercase()
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    name == "opened" || name == "opened at"
+}
+
+/// Monday of the ISO week containing `date`.
+pub fn week_start(date: NaiveDate) -> NaiveDate {
+    date - chrono::Duration::days(i64::from(date.weekday().num_days_from_monday()))
+}
+
+#[derive(Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklyRow {
+    pub counts: Vec<usize>,
+    /// Contributing records whose date column is empty or unparseable.
+    pub undated: usize,
+}
+
+#[derive(Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Weekly {
+    /// Monday of each consecutive week, as YYYY-MM-DD.
+    pub weeks: Vec<String>,
+    /// Processed records per week across all periods: the percentage denominator.
+    pub totals: Vec<usize>,
+    pub undated: usize,
+    pub rows: BTreeMap<String, WeeklyRow>,
+}
+
+/// Longest supported span; a wider one almost always means a wrong column or bad dates.
+const MAX_WEEKS: i64 = 530;
+
+/// Counts each tracked problem's records per week. `dates` maps a period ID to the
+/// parsed date of every processed source row in that period's analysis.
+pub fn weekly(
+    series: &Series,
+    dates: &BTreeMap<String, BTreeMap<usize, Option<NaiveDate>>>,
+) -> Result<Weekly> {
+    let all = || dates.values().flat_map(|rows| rows.values().flatten());
+    let (Some(first), Some(last)) = (all().min(), all().max()) else {
+        return Ok(Weekly {
+            undated: dates.values().map(BTreeMap::len).sum(),
+            rows: series
+                .problems
+                .iter()
+                .map(|p| (p.id.clone(), WeeklyRow::default()))
+                .collect(),
+            ..Weekly::default()
+        });
+    };
+    let first = week_start(*first);
+    let count = (week_start(*last) - first).num_days() / 7 + 1;
+    ensure!(
+        count <= MAX_WEEKS,
+        "The dates span more than ten years ({} to {}). Choose another column to group by.",
+        first,
+        last
+    );
+    let index = |d: &NaiveDate| ((week_start(*d) - first).num_days() / 7) as usize;
+    let mut out = Weekly {
+        weeks: (0..count)
+            .map(|w| (first + chrono::Duration::weeks(w)).format("%Y-%m-%d").to_string())
+            .collect(),
+        totals: vec![0; count as usize],
+        ..Weekly::default()
+    };
+    for date in dates.values().flat_map(BTreeMap::values) {
+        match date {
+            Some(d) => out.totals[index(d)] += 1,
+            None => out.undated += 1,
+        }
+    }
+    for problem in &series.problems {
+        let mut row = WeeklyRow {
+            counts: vec![0; count as usize],
+            undated: 0,
+        };
+        for period in &series.periods {
+            let Some(period_dates) = dates.get(&period.id) else {
+                continue;
+            };
+            let records: BTreeSet<_> = period
+                .occurrences
+                .iter()
+                .filter(|o| o.problem.as_deref() == Some(problem.id.as_str()))
+                .flat_map(|o| o.rows.iter())
+                .collect();
+            for record in records {
+                match period_dates.get(record) {
+                    Some(Some(d)) => row.counts[index(d)] += 1,
+                    _ => row.undated += 1,
+                }
+            }
+        }
+        out.rows.insert(problem.id.clone(), row);
+    }
+    Ok(out)
 }

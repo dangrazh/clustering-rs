@@ -552,3 +552,81 @@ async fn concurrent_series_edits_allow_one_revision_and_keep_archived_names_rese
         .await?;
     Ok(())
 }
+
+#[test]
+fn opened_columns_are_recognised() {
+    for name in ["Opened", "opened_at", " Opened At ", "OPENED-AT"] {
+        assert!(is_opened_column(name), "{name}");
+    }
+    for name in ["Opened by", "Reopened", "Closed at", "Created"] {
+        assert!(!is_opened_column(name), "{name}");
+    }
+}
+
+#[test]
+fn weekly_counts_group_records_by_monday_and_skip_undated() {
+    let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
+    let mut series = Series::new("Weekly".into());
+    series.problems.push(Problem {
+        id: "p".into(),
+        name: "Problem".into(),
+        origin: "test".into(),
+    });
+    let occurrence = |rows: &[usize], problem: Option<&str>| Occurrence {
+        cluster: 1,
+        label: "Cluster".into(),
+        rows: rows.iter().copied().collect(),
+        problem: problem.map(Into::into),
+        manual: false,
+        reason: String::new(),
+        candidates: vec![],
+        rejected: BTreeSet::new(),
+        replacement: false,
+    };
+    series.periods.push(Period {
+        id: "jan".into(),
+        analysis: "a".into(),
+        name: "January".into(),
+        fingerprint: "f".into(),
+        start: "2026-01-01".into(),
+        end: "2026-01-31".into(),
+        total: 5,
+        occurrences: vec![occurrence(&[0, 1, 2, 3], Some("p")), occurrence(&[4], None)],
+    });
+    // Thursday 1 Jan and Sunday 4 Jan share the week of Monday 29 Dec; 5 Jan starts the next.
+    let dates = BTreeMap::from([(
+        "jan".to_string(),
+        BTreeMap::from([
+            (0, d("2026-01-01")),
+            (1, d("2026-01-04")),
+            (2, d("2026-01-19")),
+            (3, None),
+            (4, d("2026-01-05")),
+        ]),
+    )]);
+    let weekly = weekly(&series, &dates).unwrap();
+    assert_eq!(
+        weekly.weeks,
+        ["2025-12-29", "2026-01-05", "2026-01-12", "2026-01-19"]
+    );
+    assert_eq!(weekly.totals, [2, 1, 0, 1]);
+    assert_eq!(weekly.undated, 1);
+    assert_eq!(
+        weekly.rows["p"],
+        WeeklyRow {
+            counts: vec![2, 0, 0, 1],
+            undated: 1
+        }
+    );
+}
+
+#[test]
+fn weekly_rejects_implausible_date_spans() {
+    let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
+    let series = Series::new("Weekly".into());
+    let dates = BTreeMap::from([(
+        "p".to_string(),
+        BTreeMap::from([(0, d("1900-01-01")), (1, d("2026-01-01"))]),
+    )]);
+    assert!(weekly(&series, &dates).is_err());
+}
