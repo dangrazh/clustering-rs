@@ -112,7 +112,7 @@ function applyProgressEvent(event) {
   while (log.children.length > 80) log.lastChild.remove();
 }
 
-function clearProgress() {
+export function clearProgress() {
   document.getElementById("progressBar").style.width = "0%";
   document.getElementById("progressBar").textContent = "0%";
   document.getElementById("progressMessage").textContent = "Waiting for progress.";

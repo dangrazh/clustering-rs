@@ -28,7 +28,7 @@ pub enum Role {
 }
 impl Role {
     pub fn permits(self, method: &http::Method, path: &str) -> bool {
-        if path.starts_with("/api/admin/") { return self == Self::SysAdmin; }
+        if path.starts_with("/api/admin/") || path.starts_with("/api/static-data") { return self == Self::SysAdmin; }
         if self != Self::ReadOnly { return true; }
         if matches!(*method, http::Method::GET | http::Method::HEAD) { return true; }
         if *method != http::Method::POST { return false; }

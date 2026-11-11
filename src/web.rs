@@ -3,6 +3,7 @@ mod jobs_runtime;
 mod admin;
 mod review_api;
 mod shared;
+mod static_api;
 #[cfg(test)]
 mod shared_tests;
 mod trends;
@@ -53,6 +54,7 @@ const EXCEL_TRUNCATION_SUFFIX: &str = "...";
 struct WebState {
     inner: Arc<AppState>,
     user: Option<crate::storage::User>,
+    role: crate::auth::Role,
     request_job: Option<Arc<Mutex<AnalysisJob>>>,
 }
 
@@ -65,6 +67,7 @@ struct AppState {
     auth: crate::auth::Auth,
     artifacts: crate::artifacts::Artifacts,
     presence: Mutex<HashMap<String, shared::Presence>>,
+    static_data: static_api::StaticState,
 }
 
 #[derive(Clone)]
@@ -213,6 +216,7 @@ pub async fn serve(address: SocketAddr, config: AppConfig) -> Result<()> {
     let state = WebState {
         request_job: None,
         user: None,
+        role: crate::auth::Role::default(),
         inner: Arc::new(AppState {
             heavy_requests: Arc::new(tokio::sync::Semaphore::new(crate::config::number(
                 "APP_HEAVY_REQUESTS",
@@ -227,6 +231,7 @@ pub async fn serve(address: SocketAddr, config: AppConfig) -> Result<()> {
             auth,
             artifacts,
             presence: Mutex::new(HashMap::new()),
+            static_data: Default::default(),
         }),
     };
     tracing::info!("web UI listening on http://{address}");
@@ -369,6 +374,7 @@ async fn handle(request: Request<Incoming>, mut state: WebState) -> Result<Respo
     if path.starts_with("/api/") {
         shared::authorize(&request, &mut state).await?;
         if path.starts_with("/api/admin/") { return admin::route(request,state).await; }
+        if path.starts_with("/api/static-data") { return static_api::route(request, state).await; }
         if path == "/api/maintenance" { return json_response(StatusCode::OK,&serde_json::json!({"maintenance":crate::migration::paused()})); }
         if matches!(path, "/api/import" | "/api/sessions" | "/api/analyze")
             || [
@@ -479,6 +485,10 @@ async fn handle(request: Request<Incoming>, mut state: WebState) -> Result<Respo
             "text/javascript; charset=utf-8",
             include_str!("web_assets/target-navigation.js"),
         )),
+        (Method::GET, "/list-ui.js") => Ok(text_response(StatusCode::OK, "text/javascript; charset=utf-8", include_str!("web_assets/list-ui.js"))),
+        (Method::GET, "/catalog.js") => Ok(text_response(StatusCode::OK, "text/javascript; charset=utf-8", include_str!("web_assets/catalog.js"))),
+        (Method::GET, "/guided.js") => Ok(text_response(StatusCode::OK, "text/javascript; charset=utf-8", include_str!("web_assets/guided.js"))),
+        (Method::GET, "/static-data.js") => Ok(text_response(StatusCode::OK, "text/javascript; charset=utf-8", include_str!("web_assets/static-data.js"))),
         (Method::GET, "/dashboard.js") => Ok(text_response(
             StatusCode::OK,
             "text/javascript; charset=utf-8",

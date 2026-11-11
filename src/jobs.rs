@@ -223,9 +223,20 @@ pub async fn change(
     };
     Ok(c.execute("UPDATE jobs SET state=?,artifact=COALESCE(?,artifact),error=?,expires=? WHERE id=? AND state=?",params![to,artifact,error,expires,jid,from]).await?!=0)
 }
-pub async fn cancel(store: &Store, user: &User, jid: &str) -> Result<()> {
+pub async fn list_all(store: &Store) -> Result<Vec<Job>> {
+    let c = store.connect().await?;
+    let mut rows=c.query("SELECT id,owner,state,input,artifact,metadata,created,expires,error FROM jobs WHERE expires IS NULL OR expires>? ORDER BY created DESC LIMIT 5000",[now()]).await?;
+    let mut jobs = vec![];
+    while let Some(r) = rows.next().await? {
+        jobs.push(row(r)?);
+    }
+    Ok(jobs)
+}
+/// Owners cancel their own jobs; a SysAdmin may cancel any job.
+pub async fn cancel(store: &Store, user: &User, admin: bool, jid: &str) -> Result<()> {
     let job = get(store, jid).await?;
-    ensure!(job.owner == user.id, "Only the owner can cancel a job");
+    ensure!(job.owner == user.id || admin, "Only the owner can cancel a job");
+    let reason = if job.owner == user.id { "Cancelled by owner".to_string() } else { format!("Cancelled by administrator {}", user.name) };
     ensure!(
         matches!(job.state.as_str(), "queued" | "running"),
         "Job is no longer cancellable"
@@ -235,7 +246,7 @@ pub async fn cancel(store: &Store, user: &User, jid: &str) -> Result<()> {
     let _g = lock.write().await;
     let _p = store.writers.acquire().await?;
     let c = store.connect().await?;
-    ensure!(c.execute("UPDATE jobs SET state='cancelled',error='Cancelled by owner',expires=? WHERE id=? AND owner=? AND state IN ('queued','running')",params![now()+retention_seconds()?,jid,user.id.clone()]).await?!=0,"Job finished before cancellation");
+    ensure!(c.execute("UPDATE jobs SET state='cancelled',error=?,expires=? WHERE id=? AND owner=? AND state IN ('queued','running')",params![reason,now()+retention_seconds()?,jid,job.owner.clone()]).await?!=0,"Job finished before cancellation");
     Ok(())
 }
 pub async fn interrupted(store: &Store) -> Result<()> {

@@ -130,7 +130,7 @@ pub(super) async fn route(
                 let report = m::inspect(&restored, true).await?;
                 drop(restored);
                 anyhow::ensure!(
-                    report["schema"] == 5
+                    report["schema"] == crate::storage::SCHEMA_VERSION
                         && report["storage"]["problems"]
                             .as_array()
                             .is_some_and(|p| p.is_empty()),

@@ -572,7 +572,7 @@ async fn version_one_dashboard_migration_indexes_only_confirmed_reviewers() -> R
     }
     let s = Store::open(dir.path(), 4).await?;
     let c = s.connect().await?;
-    assert_eq!(scalar(&c, "SELECT version FROM schema_version").await?, 5);
+    assert_eq!(scalar(&c, "SELECT version FROM schema_version").await?, 6);
     assert_eq!(s.delivery_cursor().await?, 42);
     let events = s.events(41).await?;
     assert_eq!(events[0]["analysisId"], "analysis");

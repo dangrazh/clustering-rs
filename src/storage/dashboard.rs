@@ -138,7 +138,10 @@ impl Store {
                 );
             }
         }
-        if let Some(section) = value.get("assigned") {
+        if let Some(assignee) = value.get("assignedAll").and_then(|s| s.get("assignee")) {
+            ensure!(assignee.as_str().is_some_and(|s| s.len() <= 200), "Invalid assignee filter");
+        }
+        for section in ["assigned", "assignedAll"].iter().filter_map(|k| value.get(*k)) {
             ensure!(section.is_object(), "Invalid assigned settings");
             ensure!(
                 section.get("archived").is_none_or(Value::is_boolean),
@@ -177,10 +180,10 @@ impl Store {
             "Invalid dashboard offset"
         );
         let c = self.connect().await?;
-        let mut rows=c.query("SELECT a.id,a.name,a.created,a.archived,u.id,u.name FROM analyses a JOIN users u ON u.id=a.creator ORDER BY a.created DESC,a.id LIMIT 501 OFFSET ?",[offset]).await?;
+        let mut rows=c.query("SELECT a.id,a.name,a.created,a.archived,u.id,u.name,a.version FROM analyses a JOIN users u ON u.id=a.creator ORDER BY a.created DESC,a.id LIMIT 501 OFFSET ?",[offset]).await?;
         let mut analyses = vec![];
         while let Some(r) = rows.next().await? {
-            analyses.push(json!({"id":r.get::<String>(0)?,"name":r.get::<String>(1)?,"created":r.get::<i64>(2)?,"archived":r.get::<i64>(3)?!=0,"owner":{"id":r.get::<String>(4)?,"name":r.get::<String>(5)?}}));
+            analyses.push(json!({"id":r.get::<String>(0)?,"name":r.get::<String>(1)?,"created":r.get::<i64>(2)?,"archived":r.get::<i64>(3)?!=0,"owner":{"id":r.get::<String>(4)?,"name":r.get::<String>(5)?},"version":r.get::<i64>(6)?}));
         }
         let mut rows=c.query("SELECT d.analysis,d.entity,d.parent,COALESCE(e.label,d.label),d.incidents,e.workflow,p.workflow,COALESCE(p.label,pd.label),pd.incidents FROM dashboard_entities d JOIN dashboard_entities pd ON pd.analysis=d.analysis AND pd.entity=d.parent LEFT JOIN reviewers own ON own.analysis=d.analysis AND own.entity=d.entity LEFT JOIN reviewers r ON r.analysis=d.analysis AND r.entity=d.parent JOIN entities e ON e.analysis=d.analysis AND e.entity=d.entity JOIN entities p ON p.analysis=d.analysis AND p.entity=d.parent WHERE CASE WHEN own.value IS NOT NULL AND own.value<>'null' THEN own.user_id ELSE r.user_id END=? ORDER BY d.analysis,CAST(d.parent AS INTEGER),d.entity LIMIT 501 OFFSET ?",params![user.id.clone(),offset]).await?;
         let mut assigned = vec![];

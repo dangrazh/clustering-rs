@@ -20,6 +20,7 @@ pub mod model;
 pub mod progress;
 pub mod schema;
 pub mod session;
+pub mod static_data;
 pub mod storage;
 pub mod text;
 pub mod trends;

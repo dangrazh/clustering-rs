@@ -79,6 +79,21 @@ impl Artifacts {
         })
         .await?
     }
+    /// Forgets and deletes an artifact that no analysis or job references any more.
+    pub async fn remove(&self, name: &str) -> Result<()> {
+        ensure!(
+            name.len() == 69 && name.ends_with(".icas") && name[..64].bytes().all(|c| c.is_ascii_hexdigit()),
+            "Invalid artifact identifier"
+        );
+        let mut cache = self.cache.lock().await;
+        if let Some((_, bytes, _)) = cache.entries.remove(name) {
+            cache.bytes -= bytes;
+        }
+        match std::fs::remove_file(self.root.join("artifacts").join(name)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
     pub async fn load(&self, name: &str) -> Result<Arc<CachedArtifact>> {
         ensure!(
             name.len() == 69

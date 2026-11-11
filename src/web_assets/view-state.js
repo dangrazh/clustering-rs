@@ -1,8 +1,9 @@
 // Keep durable configuration separate from transient DOM and request state.
 export function captureView(state) {
   return structuredClone({
-    version: 4, dateFilterModes:state.dateFilterModes||[], treeLabelFilter: state.treeLabelFilter || "", reviewerFilter: state.reviewerFilter || {}, selection: state.selection, expandedClusters: [...state.expandedClusters],
-    detailColumnFilters: state.detailColumnFilters, detailSort: state.detailSort,
+    // Per-column arrays are filled by index and can have gaps; send them complete.
+    version: 4, dateFilterModes:Array.from(state.dateFilterModes||[],mode=>mode||"exact"), treeLabelFilter: state.treeLabelFilter || "", reviewerFilter: state.reviewerFilter || {}, selection: state.selection, expandedClusters: [...state.expandedClusters],
+    detailColumnFilters: Array.from(state.detailColumnFilters||[],filter=>filter||{selected:null,query:"",searchDeselected:false}), detailSort: state.detailSort,
     pivotRows: state.pivotRows, pivotColumns: state.pivotColumns,
     detailDrilldownRowIndices: state.detailDrilldownRowIndices,
     detailDrilldownLabel: state.detailDrilldownLabel, workflowStates: state.workflowStates,

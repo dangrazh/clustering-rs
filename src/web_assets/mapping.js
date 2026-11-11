@@ -45,7 +45,27 @@ export function bindMappingEvents() {
   });
 }
 
+// A workbook with several worksheets loads its first one; say which, and how to change it.
+function renderWorksheetNotice() {
+  const notice = document.getElementById("mappingNotice");
+  if (!notice) return;
+  notice.replaceChildren();
+  const sheets = state.source?.worksheets || [];
+  if (sheets.length < 2) return;
+  const first = state.source.selectedWorksheet === sheets[0];
+  const text = document.createElement("p");
+  text.textContent = first
+    ? `The source file has ${sheets.length} worksheets. The first worksheet, “${sheets[0]}”, was used by default. To use a different worksheet, go back to 1 Source and select it.`
+    : `The source file has ${sheets.length} worksheets. Worksheet “${state.source.selectedWorksheet}” is used. To use a different worksheet, go back to 1 Source and select it.`;
+  const back = document.createElement("button");
+  back.type = "button";
+  back.textContent = "Go to 1 Source";
+  back.onclick = () => showStep("source");
+  notice.append(text, back);
+}
+
 export function renderMapping() {
+  renderWorksheetNotice();
   if(state.source)renderColumnTypes(document.getElementById("mappingColumnTypes"),state.source.headers,state.source.columnTypes);
   const source = state.source;
   if (!source || !state.mapping) return;

@@ -51,6 +51,7 @@ pub(super) async fn authorize(request: &Request<Incoming>, state: &mut WebState)
         check_csrf(request, &session)?;
     }
     state.user = Some(session.user);
+    state.role = session.role;
     Ok(())
 }
 fn check_csrf(request: &Request<Incoming>, session: &Session) -> Result<()> {
@@ -174,6 +175,10 @@ pub(super) async fn prepare(request: &Request<Incoming>, state: &mut WebState) -
     }
     if let Some(tail) = path.strip_prefix("/api/jobs/") {
         let jid = tail.split('/').next().unwrap();
+        // An operator may cancel any user's job without gaining access to its contents.
+        if state.role == crate::auth::Role::SysAdmin && tail.ends_with("/cancel") {
+            return Ok(());
+        }
         state.request_job = Some(jobs_runtime::prepare(state, jid).await?);
     }
     Ok(())
@@ -225,6 +230,14 @@ pub(super) async fn route(
                 .unwrap_or(0);
             return json_response(StatusCode::OK, &store.dashboard_page(&user, offset).await?);
         }
+        if method == Method::GET && path == "/api/dashboard/assigned-all" {
+            let offset = parse_query(uri.query())
+                .get("offset")
+                .map(|v| v.parse::<i64>())
+                .transpose()?
+                .unwrap_or(0);
+            return json_response(StatusCode::OK, &store.all_assigned(offset).await?);
+        }
         anyhow::bail!("Unknown dashboard operation");
     }
     match (method.clone(), path) {
@@ -244,7 +257,13 @@ pub(super) async fn route(
         }
         (Method::GET, "/api/users") => return json_response(StatusCode::OK, &store.users().await?),
         (Method::GET, "/api/jobs") => {
-            let mut jobs = crate::jobs::list(store, &user.id).await?;
+            let all = parse_query(uri.query()).get("scope").is_some_and(|s| s == "all");
+            anyhow::ensure!(!all || state.role == crate::auth::Role::SysAdmin, AppError::Forbidden);
+            let mut jobs = if all {
+                crate::jobs::list_all(store).await?
+            } else {
+                crate::jobs::list(store, &user.id).await?
+            };
             for job in &mut jobs {
                 if job.metadata["summary"].is_object() {
                     continue;
@@ -280,6 +299,19 @@ pub(super) async fn route(
                     job.metadata = crate::jobs::save_summary(store, &job.id, summary).await?;
                 }
             }
+            if !all {
+                return json_response(StatusCode::OK, &jobs);
+            }
+            let names = store.user_names().await?;
+            let jobs: Vec<_> = jobs
+                .into_iter()
+                .map(|job| {
+                    let owner = json!({"id":job.owner,"name":names.get(&job.owner).cloned().unwrap_or_default()});
+                    let mut value = serde_json::to_value(job).unwrap_or_default();
+                    value["ownerUser"] = owner;
+                    value
+                })
+                .collect();
             return json_response(StatusCode::OK, &jobs);
         }
         (Method::GET, "/api/analyses") => {
@@ -300,7 +332,7 @@ pub(super) async fn route(
     if let Some(tail) = path.strip_prefix("/api/jobs/") {
         let (jid, operation) = tail.split_once('/').context("Invalid job route")?;
         if operation == "cancel" && method == Method::POST {
-            crate::jobs::cancel(store, &user, jid).await?;
+            crate::jobs::cancel(store, &user, state.role == crate::auth::Role::SysAdmin, jid).await?;
             return json_response(StatusCode::OK, &json!({"cancelled":true}));
         }
         if operation == "resubmit" && method == Method::POST {
@@ -390,6 +422,28 @@ pub(super) async fn route(
         .context("Unknown route")?;
     let (aid, operation) = tail.split_once('/').unwrap_or((tail, "review"));
     match (method, operation) {
+        (Method::POST, "delete") => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Delete {
+                command_id: String,
+                expected: u64,
+            }
+            let payload: Delete = body(request).await?;
+            let outcome = store
+                .delete_analysis(
+                    &user,
+                    state.role == crate::auth::Role::SysAdmin,
+                    aid,
+                    &payload.command_id,
+                    payload.expected,
+                )
+                .await?;
+            if let Some(name) = outcome["artifact"].as_str() {
+                state.inner.artifacts.remove(name).await?;
+            }
+            json_response(StatusCode::OK, &json!({"deleted":true}))
+        }
         (Method::POST, "presence") => {
             let heartbeat: Heartbeat = body(request).await?;
             uuid::Uuid::parse_str(&heartbeat.view_id)?;
@@ -430,8 +484,18 @@ pub(super) async fn route(
         (Method::GET, "result") => {
             let info = store.analysis(aid).await?;
             let artifact = state.inner.artifacts.load(&info.artifact).await?;
-            let bytes =
-                tokio::task::spawn_blocking(move || serde_json::to_vec(&artifact.run)).await??;
+            let (run, static_columns) = super::static_api::enriched(&state, &artifact.run).await?;
+            #[derive(Serialize)]
+            struct Enriched<'a> {
+                #[serde(flatten)]
+                run: &'a crate::model::AnalysisRun,
+                /// Trailing columns joined from static data; column types cover only the rest.
+                static_columns: usize,
+            }
+            let bytes = tokio::task::spawn_blocking(move || {
+                serde_json::to_vec(&Enriched { run: &run, static_columns })
+            })
+            .await??;
             Ok(Response::builder()
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::CACHE_CONTROL, "no-store")
@@ -464,10 +528,15 @@ pub(super) async fn route(
             }
         }
         (Method::POST, "view") => {
-            let mut view: ViewState = body(request).await?;
+            // Rejected view saves are retried silently by the browser, so record why.
+            let mut view: ViewState = body(request).await.inspect_err(|error| {
+                tracing::warn!(analysis_id = aid, %error, "Personal view rejected");
+            })?;
             let info = store.analysis(aid).await?;
             let artifact = state.inner.artifacts.load(&info.artifact).await?;
-            view.sanitize(&artifact.run);
+            // Joined static columns are valid view targets (filters, order, pivot fields).
+            let (run, _) = super::static_api::enriched(&state, &artifact.run).await?;
+            view.sanitize(&run);
             store.save_view(aid, &user, &view).await?;
             json_response(StatusCode::OK, &json!({"saved":true}))
         }
@@ -482,9 +551,10 @@ pub(super) async fn route(
             let info = store.analysis(aid).await?;
             let artifact = state.inner.artifacts.load(&info.artifact).await?;
             let review: ReviewData = serde_json::from_value(snapshot["review"].clone())?;
+            let (run, _) = super::static_api::enriched(&state, &artifact.run).await?;
             let bytes = tokio::task::spawn_blocking(move || {
                 crate::io::export_analysis_bytes_with_labels(
-                    &artifact.run,
+                    &run,
                     Some(&payload.row_indices),
                     Some(&review.annotations),
                 )
@@ -499,9 +569,10 @@ pub(super) async fn route(
             let artifact = state.inner.artifacts.load(&info.artifact).await?;
             let review: ReviewData = serde_json::from_value(snapshot["review"].clone())?;
             let metadata = portable(&snapshot)?;
+            let (run, _) = super::static_api::enriched(&state, &artifact.run).await?;
             let bytes = tokio::task::spawn_blocking(move || {
                 review_api::cluster_workbook_collaborative(
-                    &artifact.run,
+                    &run,
                     &review,
                     payload,
                     Some(&metadata),
@@ -520,8 +591,9 @@ pub(super) async fn route(
             let info = store.analysis(aid).await?;
             let artifact = state.inner.artifacts.load(&info.artifact).await?;
             let mut run=(*artifact.run).clone();run.column_types=store.column_types(aid,&run).await?;
+            let (run, _) = super::static_api::enriched(&state, &Arc::new(run)).await?;
             if streaming {
-                return pivot_stream(Arc::new(run), payload);
+                return pivot_stream(run, payload);
             }
             let pivot =
                 tokio::task::spawn_blocking(move || build_pivot_response(&run, payload))

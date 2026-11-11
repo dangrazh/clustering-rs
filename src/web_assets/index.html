@@ -16,7 +16,9 @@
         <div id="mainNav" class="nav-buttons">
           <button data-step="series">Series</button>
           <button data-step="dashboard" class="active">Dashboard</button>
+          <button data-step="catalog">Analyses and Jobs</button>
         </div>
+        <button id="newAnalysis" type="button" class="primary new-analysis">Create new analysis</button>
         <div class="nav-group" role="group" aria-labelledby="clusterAnalyzeLabel">
           <span id="clusterAnalyzeLabel" class="nav-group-label">Cluster &amp; Analyze</span>
           <div class="nav-buttons">
@@ -32,6 +34,7 @@
 
     <main>
       <section id="dashboard" class="screen active"><div class="section-head"><h2>Dashboard</h2><span id="dashboardSave" class="job-metadata"></span></div><div id="dashboardGrid" class="dashboard-grid"></div></section>
+      <section id="catalog" class="screen"><div class="section-head"><h2>Analyses and Jobs</h2></div><div id="catalogGrid" class="catalog-grid"></div></section>
       <section id="series" class="screen"><div class="section-head"><h2>Cluster trends</h2></div><div id="seriesRoot"></div></section>
       <section id="source" class="screen">
         <div class="section-head">
@@ -65,6 +68,7 @@
             <button id="confirmMapping" class="primary">Confirm Field Mapping</button>
           </div>
         </div>
+        <div id="mappingNotice" class="mapping-notice" role="status"></div>
         <details><summary>Column data types</summary><div id="mappingColumnTypes"></div></details>
         <div id="mappingForm" class="form-grid"></div>
         <h3>Additional text for similarity</h3>

@@ -61,6 +61,7 @@ async fn fixture_mode(
     let state = WebState {
         request_job: None,
         user: None,
+        role: crate::auth::Role::default(),
         inner: Arc::new(AppState {
             heavy_requests: Arc::new(tokio::sync::Semaphore::new(2)),
             sources: Mutex::new(HashMap::new()),
@@ -70,6 +71,7 @@ async fn fixture_mode(
             store,
             auth,
             presence: Mutex::new(HashMap::new()),
+            static_data: Default::default(),
         }),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -740,5 +742,143 @@ async fn series_http_historical_insertion_replacement_and_access() -> Result<()>
     assert_eq!(chosen["weekly"]["undated"], 21 + 22);
     assert!(chosen["weekly"]["weeks"].as_array().unwrap().is_empty());
     assert!(!weekly("Missing").await?.status().is_success());
+    Ok(())
+}
+
+#[tokio::test]
+async fn static_data_join_deletion_and_catalog_views() -> Result<()> {
+    let (dir, state, base, alice, bob) = fixture_mode(true).await?;
+    std::fs::write(
+        dir.path().join("allowed-users.json"),
+        serde_json::to_vec(&json!([
+            {"email":"alice@example.invalid","name":"Alice","role":"SysAdmin"},
+            {"email":"bob@example.invalid","name":"Bob"}
+        ]))?,
+    )?;
+    let client = reqwest::Client::new();
+    let a = state.inner.auth.session(&format!("app_session={alice}")).await?;
+    let b = state.inner.auth.session(&format!("app_session={bob}")).await?;
+    let get = |token: &str, path: &str| {
+        client
+            .get(format!("{base}{path}"))
+            .header("Cookie", format!("app_session={token}"))
+            .send()
+    };
+
+    // A saved analysis whose source has a "Group" column for joining.
+    let mut run = fixtures::run(20);
+    run.source.headers.push("Group".into());
+    for (i, row) in run.source.rows.iter_mut().enumerate() {
+        row.push(["Service Desk", " network", "Unknown"][i % 3].into());
+    }
+    let run = Arc::new(run);
+    let review = ReviewData::new(&run)?;
+    // As in a central save: dashboard summaries come with the metadata.
+    let metadata = crate::storage::PortableMeta {
+        summaries: crate::storage::Store::entity_summaries(&run),
+        ..Default::default()
+    };
+    let artifact = state
+        .inner
+        .artifacts
+        .publish(run, review.clone(), ViewState::default(), metadata.clone())
+        .await?;
+    let aid = state
+        .inner
+        .store
+        .create(
+            &a.user,
+            &id(),
+            "Static join",
+            &artifact,
+            crate::storage::InitialReview { review: &review, view: &ViewState::default(), metadata: &metadata },
+        )
+        .await?;
+
+    // Upload, create and configure a static table; it is SysAdmin-only.
+    assert_eq!(get(&bob, "/api/static-data").await?.status(), 403);
+    let csv = "Group,Manager,Since\nService Desk,Ana,01.02.2026\nNetwork,Ben,2026-03-04\n";
+    let upload: Value = client
+        .post(format!("{base}/api/static-data/upload?filename=groups.csv"))
+        .header("Cookie", format!("app_session={alice}"))
+        .header("X-CSRF-Token", &a.csrf)
+        .body(csv)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(upload["rowCount"], 2);
+    assert_eq!(upload["columns"][2], json!({"name":"Since","field":"since","type":"Date"}));
+    let created: Value = post(&client, &format!("{base}/api/static-data/create"), &alice, &a.csrf, json!({"uploadId":upload["uploadId"],"name":"Support groups"}))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let table = created["id"].as_str().unwrap();
+    let config = json!({"keys":[{"field":"group","analysisColumn":"group"}],"fields":["manager","since"]});
+    post(&client, &format!("{base}/api/static-data/{table}/config"), &alice, &a.csrf, json!({"expected":0,"config":config}))
+        .await?
+        .error_for_status()?;
+    let rows: Value = get(&alice, &format!("/api/static-data/{table}/rows")).await?.json().await?;
+    assert_eq!(rows["rows"][0], json!(["Service Desk", "Ana", "2026-02-01"]));
+
+    // The join is left outer, case- and whitespace-insensitive, and visible to every user.
+    let result: Value = get(&bob, &format!("/api/analyses/{aid}/result")).await?.error_for_status()?.json().await?;
+    assert_eq!(result["static_columns"], 2);
+    let headers = result["source"]["headers"].as_array().unwrap();
+    assert_eq!(headers[headers.len() - 2..], [json!("Manager"), json!("Since")]);
+    let joined: Vec<_> = result["source"]["rows"].as_array().unwrap()[..3]
+        .iter()
+        .map(|r| r.as_array().unwrap()[4..].to_vec())
+        .collect();
+    assert_eq!(joined, [vec![json!("Ana"), json!("2026-02-01")], vec![json!("Ben"), json!("2026-03-04")], vec![json!(""), json!("")]]);
+    assert_eq!(result["column_types"].as_array().unwrap().len(), headers.len());
+
+    // All assigned work lists every assignee; operators see every user's jobs.
+    post(&client, &format!("{base}/api/analyses/{aid}/commands"), &alice, &a.csrf, json!({"commandId":id(),"target":"1","expected":0,"action":{"type":"reviewer","userId":b.user.id}}))
+        .await?
+        .error_for_status()?;
+    let assigned: Value = get(&bob, "/api/dashboard/assigned-all").await?.error_for_status()?.json().await?;
+    let entry = assigned["assigned"].as_array().unwrap().iter().find(|i| i["entity"] == "1").unwrap();
+    assert_eq!(entry["assignee"]["name"], "Bob");
+    assert_eq!(get(&bob, "/api/jobs?scope=all").await?.status(), 403);
+    assert_eq!(get(&alice, "/api/jobs?scope=all").await?.status(), 200);
+
+    // Only the owner or a SysAdmin deletes; deletion removes the analysis and its artifact.
+    let url = format!("{base}/api/analyses/{aid}/delete");
+    let denied = post(&client, &url, &bob, &b.csrf, json!({"commandId":id(),"expected":0})).await?;
+    assert_eq!(denied.status(), 403);
+    post(&client, &url, &alice, &a.csrf, json!({"commandId":id(),"expected":0}))
+        .await?
+        .error_for_status()?;
+    assert_eq!(get(&alice, &format!("/api/analyses/{aid}/result")).await?.status(), 404);
+    assert!(!dir.path().join("artifacts").join(&artifact).exists());
+    let assigned: Value = get(&bob, "/api/dashboard/assigned-all").await?.json().await?;
+    assert!(assigned["assigned"].as_array().unwrap().is_empty());
+
+    // Replacing rows keeps the join settings whose columns still exist ("Since" is gone).
+    let replacement: Value = client
+        .post(format!("{base}/api/static-data/upload?filename=groups-v2.csv"))
+        .header("Cookie", format!("app_session={alice}"))
+        .header("X-CSRF-Token", &a.csrf)
+        .body("Group,Manager\nService Desk,Zoe\n")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    post(&client, &format!("{base}/api/static-data/create"), &alice, &a.csrf, json!({"uploadId":replacement["uploadId"],"name":"Support groups","replace":table,"expected":1}))
+        .await?
+        .error_for_status()?;
+    let tables: Value = get(&alice, "/api/static-data").await?.json().await?;
+    assert_eq!(tables[0]["rowCount"], 1);
+    assert_eq!(tables[0]["config"]["fields"], json!(["manager"]));
+    assert_eq!(tables[0]["config"]["keys"][0]["field"], "group");
+    post(&client, &format!("{base}/api/static-data/{table}/delete"), &alice, &a.csrf, json!({}))
+        .await?
+        .error_for_status()?;
+    let tables: Value = get(&alice, "/api/static-data").await?.json().await?;
+    assert!(tables.as_array().unwrap().is_empty());
     Ok(())
 }

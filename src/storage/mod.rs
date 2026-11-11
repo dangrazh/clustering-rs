@@ -17,7 +17,9 @@ use tokio::sync::{RwLock, Semaphore};
 use turso::{params, Connection};
 use unicode_normalization::UnicodeNormalization;
 
+mod catalog;
 mod dashboard;
+pub mod static_data;
 #[cfg(test)]
 mod tests;
 pub mod trends;
@@ -110,6 +112,9 @@ pub struct Store {
     publisher: tokio::sync::Mutex<()>,
     _instance: std::fs::File,
 }
+/// Current database schema. Packages from version 5 onward are accepted and migrate on open.
+pub const SCHEMA_VERSION: i64 = 6;
+pub const OLDEST_PACKAGE_SCHEMA: i64 = 5;
 pub fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -207,7 +212,7 @@ impl Store {
         ensure!(
             matches!(
                 scalar(&c, "SELECT version FROM schema_version").await?,
-                1..=5
+                1..=SCHEMA_VERSION
             ),
             "Unsupported database schema version"
         );
@@ -229,6 +234,7 @@ impl Store {
             let result=async{c.execute("CREATE TABLE column_metadata(analysis TEXT PRIMARY KEY REFERENCES analyses(id),value TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 0)",()).await?;c.execute("UPDATE schema_version SET version=5",()).await?;Ok::<_,anyhow::Error>(())}.await;
             finish(&c,result).await?;
         }
+        static_data::migrate(&c).await?;
         Ok(s)
     }
     pub async fn column_types(&self,aid:&str,run:&crate::model::AnalysisRun)->Result<Vec<crate::columns::ColumnType>> {

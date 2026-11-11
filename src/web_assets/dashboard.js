@@ -1,102 +1,99 @@
 import { openReviewTarget } from "./target-navigation.js";
-import {jobSummaryText,jobAction} from "./jobs-view.js";
 import {state} from "./state.js";
-import {request} from "./api.js";
-import {loadResult} from "./results.js";
-import {listenForProgress} from "./analysis.js";
-import {noticeDialog} from "./ui.js";
 import {statusLabels} from "./workflow.js";
-const post=value=>({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
-async function json(url,options){const r=await request(url,options),v=await r.json();if(!r.ok)throw Error(v.error||r.statusText);return v;}
-const node=(tag,text,cls)=>{const e=document.createElement(tag);if(text!=null)e.textContent=text;if(cls)e.className=cls;return e;};
-const button=(text,action)=>{const b=node("button",text);b.type="button";b.onclick=()=>Promise.resolve().then(action).catch(e=>noticeDialog(e.message));return b;};
-const empty=(list,text)=>list.append(node("p",text,"dashboard-empty"));
-// Cells truncate to keep rows on one line, so the full value stays available as a tooltip.
-const cell=(text,cls="dashboard-meta",title=text)=>{const e=node("span",text,cls);e.title=title;return e;};
-const shortDate=date=>date.toLocaleString([],{dateStyle:"short",timeStyle:"short"});
-const dateCell=date=>cell(shortDate(date),"dashboard-meta",date.toLocaleString());
-const count=value=>cell(value.toLocaleString(),"dashboard-meta dashboard-number");
-const head=(...labels)=>{const e=node("div",null,"dashboard-head");e.append(...labels.map(label=>node("span",label)));return e;};
-const openButton=(text,key,action)=>{const b=button(text,action);b.className="dashboard-open";b.title=text;b.dataset.key=key;return b;};
-const moreButton=(text,action)=>{const b=button(text,action);b.className="dashboard-more";return b;};
+import {json,post,node,empty,cell,dateCell,count,head,openButton,moreButton,listPanel,replaceList,searchInput,checkbox,select} from "./list-ui.js";
+// Quadrants in reading order: top left, top right, bottom left, bottom right.
+const quadrants=[["assigned","My assigned work"],["mine","My analyses"],["assignedAll","All assigned work"],["all","All analyses"]];
 export async function initializeDashboard(openAnalysis){
   const saved=await json("/api/dashboard/preferences");
-  const prefs={version:1,mine:{search:"",archived:false,...saved.mine},all:{search:"",archived:false,...saved.all},assigned:{archived:false,status:"",...saved.assigned},expanded:Array.isArray(saved.expanded)?saved.expanded:[]};
-  const sections={},grid=document.getElementById("dashboardGrid");let data=null,jobs=null,busy=false,again=false,dirty=false,saving=false,signature="",jobsSignature="",dataDirty=true;
+  const prefs={version:1,mine:{search:"",archived:false,...saved.mine},all:{search:"",archived:false,...saved.all},assigned:{archived:false,status:"",...saved.assigned},assignedAll:{archived:false,status:"",assignee:"",...saved.assignedAll},expanded:Array.isArray(saved.expanded)?saved.expanded:[]};
+  const sections={},grid=document.getElementById("dashboardGrid");let data=null,busy=false,again=false,dirty=false,saving=false,signature="",dataDirty=true;
   const isVisible=()=>document.getElementById("dashboard").classList.contains("active")&&!document.hidden;
   const saveStatus=document.getElementById("dashboardSave");
   function changed(){dirty=true;saveStatus.textContent="Saving dashboard settings…";render();}
   async function save(){if(!dirty||saving)return;saving=true;dirty=false;const value=structuredClone(prefs);try{await json("/api/dashboard/preferences",post(value));saveStatus.textContent=dirty?"Saving dashboard settings…":"Dashboard settings saved";}catch{dirty=true;saveStatus.textContent="Settings not saved — retrying";}finally{saving=false;}}
-  for(const [key,title] of [["jobs","My jobs"],["mine","My analyses"],["assigned","Assigned work"],["all","All analyses"]]){
-    const panel=node("section",null,"dashboard-panel"),heading=node("h3",title),controls=node("div",null,"dashboard-controls"),error=node("p",null,"dashboard-error"),list=node("div",null,"dashboard-list");list.dataset.list=key;heading.id=`dashboard-${key}-title`;panel.setAttribute("aria-labelledby",heading.id);error.setAttribute("role","status");panel.append(heading,controls,error,list);grid.append(panel);sections[key]={panel,list,error};
-    if(key==="mine"||key==="all"){const input=node("input");input.type="search";input.placeholder="Search by name";input.setAttribute("aria-label",`Search ${title}`);input.value=prefs[key].search;input.oninput=()=>{prefs[key].search=input.value.slice(0,200);changed();};controls.append(input);}
-    if(key!=="jobs"){const label=node("label"),input=node("input");input.type="checkbox";input.checked=!!prefs[key].archived;input.onchange=()=>{prefs[key].archived=input.checked;changed();};label.append(input,document.createTextNode(" Show archived"));controls.append(label);}
-    if(key==="assigned"){const select=node("select");select.setAttribute("aria-label","Assigned work status");for(const [value,label] of [["","All statuses"],...Object.entries(statusLabels)]){const o=node("option",label);o.value=value;select.append(o);}select.value=prefs.assigned.status;select.onchange=()=>{prefs.assigned.status=select.value;changed();};controls.append(select);}
-    empty(list,"Loading…");
+  const statusOptions=[["","All statuses"],...Object.entries(statusLabels)];
+  for(const [key,title] of quadrants){
+    const section=listPanel(key,title,"dashboard");grid.append(section.panel);sections[key]=section;const {controls}=section;
+    if(key==="mine"||key==="all")controls.append(searchInput(`Search ${title}`,prefs[key].search,value=>{prefs[key].search=value;changed();}));
+    if(key==="assignedAll"){const assignee=select("Assignee",[["","All assignees"]],prefs.assignedAll.assignee,value=>{prefs.assignedAll.assignee=value;changed();});assignee.dataset.role="assignee";controls.append(assignee);}
+    if(key==="assigned"||key==="assignedAll")controls.append(select(`${title} status`,statusOptions,prefs[key].status,value=>{prefs[key].status=value;changed();}));
+    controls.append(checkbox("Show archived",!!prefs[key].archived,value=>{prefs[key].archived=value;changed();}));
+    empty(section.list,"Loading…");
   }
-  function replaceList(key,build){const list=sections[key].list,scroll=list.scrollTop;const focus=document.activeElement?.dataset?.key;list.replaceChildren();build(list);list.scrollTop=scroll;if(focus){const match=[...list.querySelectorAll("[data-key]")].find(e=>e.dataset.key===focus);match?.focus({preventScroll:true});}}
   const analysisLimits={mine:100,all:100};
-  function analysisList(key){replaceList(key,list=>{let entries=data.analyses.filter(a=>(key!=="mine"||a.owner.id===state.user.id)&&(prefs[key].archived||!a.archived)&&a.name.normalize().toLowerCase().includes(prefs[key].search.trim().normalize().toLowerCase()));let shown=0;const more=()=>{for(const a of entries.slice(shown,analysisLimits[key])){const row=node("div",null,"dashboard-row");row.append(openButton(a.name,`${key}:${a.id}`,()=>openAnalysis(a.id)),cell(a.owner.name),dateCell(new Date(a.created*1000)),cell(a.archived?"Archived":"Active"));list.append(row);}shown=analysisLimits[key];if(shown<entries.length){const next=moreButton("Show more",()=>{next.remove();analysisLimits[key]+=100;more();});list.append(next);}};if(!entries.length)empty(list,"No analyses match this view.");else{list.append(head("Name","Owner","Created","State"));more();}});}
+  function analysisList(key){replaceList(sections[key].list,list=>{let entries=data.analyses.filter(a=>(key!=="mine"||a.owner.id===state.user.id)&&(prefs[key].archived||!a.archived)&&a.name.normalize().toLowerCase().includes(prefs[key].search.trim().normalize().toLowerCase()));let shown=0;const more=()=>{for(const a of entries.slice(shown,analysisLimits[key])){const row=node("div",null,"dashboard-row");row.append(openButton(a.name,`${key}:${a.id}`,()=>openAnalysis(a.id)),cell(a.owner.name),dateCell(new Date(a.created*1000)),cell(a.archived?"Archived":"Active"));list.append(row);}shown=analysisLimits[key];if(shown<entries.length){const next=moreButton("Show more",()=>{next.remove();analysisLimits[key]+=100;more();});list.append(next);}};if(!entries.length)empty(list,"No analyses match this view.");else{list.append(head("Name","Owner","Created","State"));more();}});}
   const openTarget=(aid,item)=>openReviewTarget(openAnalysis,aid,item.entity);
-  let assignedLimit=100;
-  const themeLimits=new Map();
-  function assignedList(){
-    replaceList("assigned",list=>{
-      const analyses=data.analyses.filter(a=>prefs.assigned.archived||!a.archived).sort((a,b)=>a.name.localeCompare(b.name));
-      const byAnalysis=new Map();
-      for(const item of data.assigned){if(!byAnalysis.has(item.analysisId))byAnalysis.set(item.analysisId,[]);byAnalysis.get(item.analysisId).push(item);}
-      let groups=0,lastAnalysis=null;
-      for(const a of analyses){
-        const items=byAnalysis.get(a.id)||[];
-        const matching=items.filter(i=>!prefs.assigned.status||i.status===prefs.assigned.status);
-        const parents=[...new Set(matching.map(i=>i.parent))].sort((x,y)=>Number(x)-Number(y));
-        for(const parent of parents){
-          if(++groups>assignedLimit)continue;
-          const child=items.find(i=>i.parent===parent);const cluster=items.find(i=>i.entity===parent)||{...child,entity:parent,label:child.parentLabel,incidents:child.parentIncidents,contextOnly:true};
-          if(lastAnalysis===null)list.append(head("Cluster / theme","Status","Incidents"));
-          if(lastAnalysis!==a.id){list.append(node("h4",a.name+(a.archived?" (Archived)":"")));lastAnalysis=a.id;}
-          const key=`${a.id}:${parent}`,details=node("details"),summary=node("summary");
-          summary.append(cell(`Cluster ${parent} — ${cluster.label}`,"dashboard-title"),cell(statusLabels[cluster.status]||cluster.status),count(cluster.incidents));
-          summary.dataset.key=`group:${key}`;details.open=prefs.expanded.includes(key);details.append(summary);
-          const children=node("div");details.append(children);let rendered=false;
-          const row=(item,theme=false)=>{
-            const el=node("div",null,`dashboard-row${theme?" dashboard-theme":""}`);
-            el.append(openButton(`${theme?"Theme":"Cluster"} ${item.entity} — ${item.label}`,`assigned:${a.id}:${item.entity}`,()=>openTarget(a.id,item)),cell(statusLabels[item.status]||item.status),count(item.incidents));return el;
-          };
-          function renderChildren(){
-            rendered=true;children.replaceChildren();
-            if(!cluster.contextOnly&&(!prefs.assigned.status||cluster.status===prefs.assigned.status))children.append(row(cluster));
-            else children.append(node("p","Parent context — assigned work is listed below","dashboard-meta"));
-            const themes=matching.filter(i=>i.parent===parent&&i.entity!==parent).sort((x,y)=>Number(x.entity.split(":")[1])-Number(y.entity.split(":")[1]));
-            const limit=themeLimits.get(key)||100;
-            for(const theme of themes.slice(0,limit))children.append(row(theme,true));
-            if(themes.length>limit)children.append(moreButton("Show more themes",()=>{themeLimits.set(key,limit+100);renderChildren();}));
-          }
-          if(details.open)renderChildren();
-          details.ontoggle=()=>{
-            if(details.open&&!rendered)renderChildren();
-            const has=prefs.expanded.includes(key);if(details.open===has)return;
-            prefs.expanded=details.open?[...prefs.expanded,key].slice(-1000):prefs.expanded.filter(k=>k!==key);
-            dirty=true;saveStatus.textContent="Saving dashboard settings…";
-          };
-          list.append(details);
+  const groupLimits={assigned:100,assignedAll:100},themeLimits=new Map();
+  // Assigned clusters per analysis; a theme assigned on its own shows its cluster as context.
+  function appendGroups(list,key,items,scope,counter){
+    const filter=prefs[key],analyses=data.analyses.filter(a=>filter.archived||!a.archived).sort((a,b)=>a.name.localeCompare(b.name));
+    const byAnalysis=new Map();for(const item of items){if(!byAnalysis.has(item.analysisId))byAnalysis.set(item.analysisId,[]);byAnalysis.get(item.analysisId).push(item);}
+    let lastAnalysis=null;
+    for(const a of analyses){
+      const all=byAnalysis.get(a.id)||[],matching=all.filter(i=>!filter.status||i.status===filter.status);
+      const parents=[...new Set(matching.map(i=>i.parent))].sort((x,y)=>Number(x)-Number(y));
+      for(const parent of parents){
+        if(++counter.groups>groupLimits[key])continue;
+        if(counter.groups===1)list.append(head("Cluster / theme","Status","Incidents"));
+        if(counter.scope!==scope){counter.scope=scope;if(scope)list.append(node("div",scope,"dashboard-assignee"));}
+        if(lastAnalysis!==a.id){list.append(node("h4",a.name+(a.archived?" (Archived)":"")));lastAnalysis=a.id;}
+        const child=all.find(i=>i.parent===parent),cluster=all.find(i=>i.entity===parent)||{...child,entity:parent,label:child.parentLabel,incidents:child.parentIncidents,contextOnly:true};
+        const groupKey=`${key==="assignedAll"?`${child.assignee.id}:`:""}${a.id}:${parent}`,details=node("details"),summary=node("summary");
+        summary.append(cell(`Cluster ${parent} — ${cluster.label}`,"dashboard-title"),cell(statusLabels[cluster.status]||cluster.status),count(cluster.incidents));
+        summary.dataset.key=`group:${key}:${groupKey}`;details.open=prefs.expanded.includes(groupKey);details.append(summary);
+        const children=node("div");details.append(children);let rendered=false;
+        const row=(item,theme=false)=>{const el=node("div",null,`dashboard-row${theme?" dashboard-theme":""}`);el.append(openButton(`${theme?"Theme":"Cluster"} ${item.entity} — ${item.label}`,`${key}:${groupKey}:${item.entity}`,()=>openTarget(a.id,item)),cell(statusLabels[item.status]||item.status),count(item.incidents));return el;};
+        function renderChildren(){
+          rendered=true;children.replaceChildren();
+          if(!cluster.contextOnly&&(!filter.status||cluster.status===filter.status))children.append(row(cluster));
+          else children.append(node("p","Parent context — assigned work is listed below","dashboard-meta"));
+          const themes=matching.filter(i=>i.parent===parent&&i.entity!==parent).sort((x,y)=>Number(x.entity.split(":")[1])-Number(y.entity.split(":")[1]));
+          const limit=themeLimits.get(groupKey)||100;
+          for(const theme of themes.slice(0,limit))children.append(row(theme,true));
+          if(themes.length>limit)children.append(moreButton("Show more themes",()=>{themeLimits.set(groupKey,limit+100);renderChildren();}));
+        }
+        if(details.open)renderChildren();
+        details.ontoggle=()=>{
+          if(details.open&&!rendered)renderChildren();
+          const has=prefs.expanded.includes(groupKey);if(details.open===has)return;
+          prefs.expanded=details.open?[...prefs.expanded,groupKey].slice(-1000):prefs.expanded.filter(k=>k!==groupKey);
+          dirty=true;saveStatus.textContent="Saving dashboard settings…";
+        };
+        list.append(details);
+      }
+    }
+  }
+  function assignedList(key){
+    replaceList(sections[key].list,list=>{
+      const counter={groups:0,scope:null};
+      if(key==="assigned")appendGroups(list,key,data.assigned,null,counter);
+      else{
+        // Group by assignee; the filter narrows to one person.
+        const people=new Map();for(const item of data.assignedAll)people.set(item.assignee.id,item.assignee.name);
+        const chooser=sections.assignedAll.controls.querySelector('[data-role="assignee"]');
+        chooser.replaceChildren(new Option("All assignees",""),...[...people].sort((a,b)=>a[1].localeCompare(b[1])).map(([id,name])=>new Option(name,id)));
+        chooser.value=people.has(prefs.assignedAll.assignee)?prefs.assignedAll.assignee:"";
+        for(const [id,name] of [...people].sort((a,b)=>a[1].localeCompare(b[1]))){
+          if(chooser.value&&id!==chooser.value)continue;
+          appendGroups(list,key,data.assignedAll.filter(i=>i.assignee.id===id),name,counter);
         }
       }
-      if(!groups)empty(list,"No assigned work matches this view.");
-      if(groups>assignedLimit)list.append(moreButton("Show more assigned clusters",()=>{assignedLimit+=100;assignedList();}));
+      if(!counter.groups)empty(list,"No assigned work matches this view.");
+      if(counter.groups>groupLimits[key])list.append(moreButton("Show more assigned clusters",()=>{groupLimits[key]+=100;assignedList(key);}));
     });
   }
-  async function openJob(original){const latest=(await json("/api/jobs")).find(j=>j.id===original.id);if(!latest)throw Error("This job is no longer available.");if(latest.metadata?.analysisId)return openAnalysis(latest.metadata.analysisId);if(latest.state==="finished"){state.analysisId=null;return loadResult(latest.id);}if(["queued","running"].includes(latest.state))return listenForProgress(latest.id);await noticeDialog(latest.error||`Job ${latest.state}. Use Resubmit to run it again.`);}
-  function jobsList(){replaceList("jobs",list=>{if(!jobs.length)return empty(list,"You have no retained jobs.");list.append(head("Created","State","Details","Available until",""));for(const job of jobs){const row=node("div",null,"dashboard-row");const created=new Date(job.created),open=openButton(shortDate(created),`job:${job.id}`,()=>openJob(job));open.title=created.toLocaleString();row.append(open,cell(job.state),cell(jobSummaryText(job)),job.expires?dateCell(new Date(job.expires*1000)):cell("—"));const operation=jobAction(job);if(!operation)row.append(node("span"));else{const action=button(operation==="cancel"?"Cancel":"Resubmit",async()=>{await json(`/api/jobs/${job.id}/${operation}`,post({}));await refresh();});if(operation==="resubmit"&&!job.input){action.disabled=true;action.title="The original input is no longer available.";}action.className="dashboard-action";row.append(action);}if(job.error)row.append(cell(job.error,"dashboard-error"));list.append(row);}});}
   async function fetchData(){
-    const result={analyses:[],assigned:[]};let offset=0;
+    const result={analyses:[],assigned:[],assignedAll:[]};let offset=0;
     do{const page=await json(`/api/dashboard/data?offset=${offset}`);result.analyses.push(...page.analyses);result.assigned.push(...page.assigned);offset=page.nextOffset;}while(offset!=null);
+    offset=0;do{const page=await json(`/api/dashboard/assigned-all?offset=${offset}`);result.assignedAll.push(...page.assigned);offset=page.nextOffset;}while(offset!=null);
     result.analyses=[...new Map(result.analyses.map(a=>[a.id,a])).values()];
     result.assigned=[...new Map(result.assigned.map(a=>[`${a.analysisId}:${a.entity}`,a])).values()];
+    result.assignedAll=[...new Map(result.assignedAll.map(a=>[`${a.assignee.id}:${a.analysisId}:${a.entity}`,a])).values()];
     return result;
   }
-  function render(){if(data){analysisList("mine");analysisList("all");assignedList();}}
-  async function refresh(){if(!isVisible())return;if(busy){again=true;return;}busy=true;try{do{again=false;await Promise.all([(dataDirty?(dataDirty=false,fetchData()):Promise.resolve(null)).then(value=>{if(!value)return;for(const k of ["mine","all","assigned"])sections[k].error.textContent="";const next=JSON.stringify(value);if(next!==signature){data=value;signature=next;render();}}).catch(e=>{dataDirty=true;for(const k of ["mine","all","assigned"])sections[k].error.textContent=`Unable to refresh: ${e.message}`;}),json("/api/jobs").then(value=>{sections.jobs.error.textContent="";const next=JSON.stringify(value);if(next!==jobsSignature){jobs=value;jobsSignature=next;jobsList();}}).catch(e=>{sections.jobs.error.textContent=`Unable to refresh: ${e.message}`;})]);}while(again&&isVisible());}finally{busy=false;}}
+  function render(){if(data){assignedList("assigned");analysisList("mine");assignedList("assignedAll");analysisList("all");}}
+  async function refresh(){if(!isVisible())return;if(busy){again=true;return;}busy=true;try{do{again=false;if(!dataDirty)break;dataDirty=false;try{const value=await fetchData();for(const [k] of quadrants)sections[k].error.textContent="";const next=JSON.stringify(value);if(next!==signature){data=value;signature=next;render();}}catch(e){dataDirty=true;for(const [k] of quadrants)sections[k].error.textContent=`Unable to refresh: ${e.message}`;}}while(again&&isVisible());}finally{busy=false;}}
   window.addEventListener("dashboard-refresh",()=>{dataDirty=true;refresh();});window.addEventListener("pane-change",e=>{if(e.detail==="dashboard"){dataDirty=true;setTimeout(refresh,0);}});document.addEventListener("visibilitychange",()=>{dataDirty=true;refresh();});
-  setInterval(refresh,3000);setInterval(save,750);await refresh();
+  setInterval(save,750);await refresh();
 }

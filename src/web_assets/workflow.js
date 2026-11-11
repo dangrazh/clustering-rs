@@ -44,7 +44,8 @@ export function applyReviewResponse(payload) {
   if(state.analysis&&payload.columnTypes){
     const old=state.analysis.column_types||[];
     payload.columnTypes.forEach((type,i)=>{if(JSON.stringify(type)!==JSON.stringify(old[i])){state.detailColumnFilters[i]={selected:null,query:""};(state.dateFilterModes||=[])[i]="exact";}});
-    state.analysis.column_types=payload.columnTypes;
+    // Keep the types of trailing columns joined from static data; the snapshot covers the rest.
+    state.analysis.column_types=[...payload.columnTypes,...old.slice(payload.columnTypes.length)];
   }
   state.review = payload.review;
   state.allowedActions = payload.allowedActions || {};

@@ -98,6 +98,7 @@ export function bindResultsEvents() {
   });
 
   document.querySelector('[data-step="pivot"]').addEventListener("click", () => renderPivot());
+  bindPivotDropZones();
 
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".pivot-context-menu")) hidePivotContextMenu();
@@ -709,6 +710,7 @@ function clearDetailDrilldown() {
   renderDetailRows();
 }
 
+// Fields, chips and remove buttons are recreated on every render, so they are bound each time.
 function bindPivotDrag() {
   document.querySelectorAll(".pivot-field, .pivot-chip").forEach((item) => {
     item.addEventListener("dragstart", (event) => {
@@ -721,6 +723,14 @@ function bindPivotDrag() {
     });
   });
 
+  document.querySelectorAll(".pivot-remove").forEach((button) => {
+    button.addEventListener("click", () => removePivotField(Number(button.dataset.column), button.dataset.area));
+  });
+}
+
+// The Rows and Columns drop zones are static page elements: bind them once, at start-up.
+// Binding them on every render stacked listeners, so one drop sent 2, 4, 8… pivot requests.
+function bindPivotDropZones() {
   document.querySelectorAll(".pivot-drop-zone").forEach((zone) => {
     zone.addEventListener("dragover", (event) => {
       event.preventDefault();
@@ -734,10 +744,6 @@ function bindPivotDrag() {
       const column = Number(event.dataTransfer.getData("text/plain"));
       movePivotField(column, zone.dataset.pivotArea);
     });
-  });
-
-  document.querySelectorAll(".pivot-remove").forEach((button) => {
-    button.addEventListener("click", () => removePivotField(Number(button.dataset.column), button.dataset.area));
   });
 }
 

@@ -37,6 +37,7 @@ pub struct ViewState {
     pub version: u16,
     pub selection: Option<Selection>,
     pub expanded_clusters: Vec<String>,
+    #[serde(deserialize_with = "nulls_as_default")]
     pub detail_column_filters: Vec<ColumnFilter>,
     pub detail_sort: Option<Sort>,
     pub pivot_rows: Vec<u64>,
@@ -46,7 +47,20 @@ pub struct ViewState {
     pub workflow_states: Vec<ReviewStatus>,
     pub reviewer_filter: ReviewerFilter,
     pub tree_label_filter: String,
+    #[serde(deserialize_with = "nulls_as_default")]
     pub date_filter_modes: Vec<String>,
+}
+/// Per-column lists are indexed by column, so a browser can send gaps as `null`.
+/// A gap means "no setting for this column" rather than an invalid view.
+fn nulls_as_default<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Vec::<Option<T>>::deserialize(deserializer)?
+        .into_iter()
+        .map(Option::unwrap_or_default)
+        .collect())
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Selection {
@@ -939,5 +953,16 @@ mod compatibility_tests {
             decode_review(&review).unwrap().analysis_id,
             current.analysis_id
         );
+    }
+    #[test]
+    fn view_with_gaps_in_per_column_settings_still_loads() {
+        // Browsers fill these arrays by column index, so unset columns arrive as null.
+        let view: ViewState = serde_json::from_str(
+            r#"{"version":4,"dateFilterModes":[null,null,"month"],"detailColumnFilters":[null,{"query":"vpn"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(view.date_filter_modes, ["", "", "month"]);
+        assert_eq!(view.detail_column_filters[0], ColumnFilter::default());
+        assert_eq!(view.detail_column_filters[1].query, "vpn");
     }
 }

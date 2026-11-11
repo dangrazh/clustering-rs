@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {labelMatches,clearResultsFilters,captureView,restoreView} from "../src/web_assets/view-state.js";
+test("captured views have no gaps in per-column settings",()=>{
+ const s={expandedClusters:new Set(),dateFilterModes:[],detailColumnFilters:[]};s.dateFilterModes[2]="month";s.detailColumnFilters[1]={selected:["x"],query:"",searchDeselected:false};
+ const view=JSON.parse(JSON.stringify(captureView(s)));
+ assert.deepEqual(view.dateFilterModes,["exact","exact","month"]);
+ assert.deepEqual(view.detailColumnFilters,[{selected:null,query:"",searchDeselected:false},{selected:["x"],query:"",searchDeselected:false}]);
+});
 import {reviewerRows,assignment} from "../src/web_assets/reviewers.js";
 test("label search is a literal case-insensitive substring with star wildcards",()=>{
  assert.ok(labelMatches("Payment gateway timeout","PAY*TIME"));assert.ok(labelMatches("a[b].c","[b]."));assert.ok(!labelMatches("abc","a.c"));assert.ok(!labelMatches("timeout payment","pay*time"));assert.ok(labelMatches("anything","*"));

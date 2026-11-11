@@ -26,7 +26,7 @@ async fn fifo_restart_cancellation_and_ownership() -> Result<()> {
     let second = enqueue(&store, &bob, input()).await?;
     assert_eq!(next(&store).await?.unwrap().id, first);
     assert!(change(&store, &first, "queued", "running", None, None).await?);
-    assert!(cancel(&store, &alice, &second).await.is_err());
+    assert!(cancel(&store, &alice, false, &second).await.is_err());
     drop(store);
     let store = Store::open(dir.path(), 4).await?;
     interrupted(&store).await?;
@@ -38,7 +38,7 @@ async fn fifo_restart_cancellation_and_ownership() -> Result<()> {
     assert_eq!(get(&store, &first).await?.state, "failed");
     assert_eq!(get(&store, &second).await?.state, "queued");
     assert_eq!(next(&store).await?.unwrap().id, second);
-    cancel(&store, &bob, &second).await?;
+    cancel(&store, &bob, false, &second).await?;
     assert!(next(&store).await?.is_none());
     assert_eq!(list(&store, &alice.id).await?.len(), 1);
     Ok(())

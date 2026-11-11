@@ -1,6 +1,7 @@
 import {state} from "./state.js";
 import {request} from "./api.js";
 import {askDialog,showStep} from "./ui.js";
+import {staticDataSection} from "./static-data.js";
 const post=value=>({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value||{})});
 async function json(url,options){const r=await request(url,options);const v=await r.json();if(!r.ok)throw Error(v.error||r.statusText);return v;}
 function el(tag,text,cls){const e=document.createElement(tag);if(text!=null)e.textContent=text;if(cls)e.className=cls;return e;}
@@ -12,11 +13,12 @@ export function initializeAdmin(role){
  setInterval(async()=>{try{const r=await globalThis.fetch("/api/maintenance");if(r.ok){const v=await r.json();banner.textContent=v.maintenance?"System maintenance: new work is paused. Keep this page open to retain unsaved drafts.":"";}}catch{}},3000);
  if(role==="Read Only User"){
   document.querySelector(".collaboration-bar").append(el("span","Read only — personal filters and views can still be saved."));
-  const protect=()=>{document.querySelectorAll('#centralSave,#fileInput,#sessionInput,#startAnalysis,#source input,#mapping input,#mapping button,#analysis input,#analysis textarea,#analysis button,[data-step="source"],[data-step="mapping"],[data-step="analysis"],#workflowPanel input,#workflowPanel select,#workflowPanel textarea,#workflowPanel button,#editColumnTypes,#editLabel,#undoWorkflow,#inheritWorkflow,.comment-actions button').forEach(e=>{if(!e.disabled)e.disabled=true;});};
+  const protect=()=>{document.querySelectorAll('#newAnalysis,#centralSave,#fileInput,#sessionInput,#startAnalysis,#source input,#mapping input,#mapping button,#analysis input,#analysis textarea,#analysis button,[data-step="source"],[data-step="mapping"],[data-step="analysis"],#workflowPanel input,#workflowPanel select,#workflowPanel textarea,#workflowPanel button,#editColumnTypes,#editLabel,#undoWorkflow,#inheritWorkflow,.comment-actions button').forEach(e=>{if(!e.disabled)e.disabled=true;});};
   protect();new MutationObserver(protect).observe(document.body,{childList:true,subtree:true});
  }
  if(role!=="SysAdmin")return;
- const nav=button("Sysadmin",()=>{showStep("sysadmin");refresh();});nav.dataset.step="sysadmin";document.getElementById("mainNav").append(nav);
+ const staticData=staticDataSection();
+ const nav=button("Sysadmin",()=>{showStep("sysadmin");refresh();staticData.refresh();});nav.dataset.step="sysadmin";document.getElementById("mainNav").append(nav);
  const pane=el("section",null,"screen");pane.id="sysadmin";
  pane.append(el("h2","System administration"),el("p","Inspect active storage and transfer the complete dataset. Export and activation briefly stop and reopen the service after current work finishes."));
  const toolbar=el("div",null,"toolbar"),error=el("p","","workflow-error"),summary=el("div",null,"admin-summary"),operation=el("div",null,"admin-operation"),inventory=el("div",null,"table-wrap");error.setAttribute("role","alert");
@@ -33,6 +35,6 @@ export function initializeAdmin(role){
  function renderOperation(){operation.replaceChildren();if(!current)return;operation.append(el("h3","Migration"),el("p",`State: ${current.state}`));if(current.error)operation.append(el("p",current.error,"workflow-error"));if(current.state==="draining"||current.state==="activating")operation.append(el("p","Waiting for active work, then closing the database. Connection loss during restart is expected; this screen reconnects automatically."));if(current.report)operation.append(el("p",Object.entries(current.report.counts).map(([k,v])=>`${k}: ${v}`).join(" · ")));if(current.state==="export-ready"){const link=el("a","Download migration package","button");link.href="/api/admin/download";operation.append(link,el("p","Transfer this single .icam file through Windows unchanged. Upload it on the destination Linux server; do not extract it."));}if(current.state==="import-ready")operation.append(el("p","Package validated. Source sessions will be invalidated. The destination allowlist stays unchanged. Temporary-result expiry dates are not extended."),button("Activate restored data",()=>action(async()=>{if(!await askDialog("Activate restored data","The empty destination restarts using this dataset. All users must sign in again. Previous destination data is retained for recovery.",{confirmLabel:"Activate and restart"}))return;current=await json("/api/admin/activate",post({id:current.id,digest:current.digest}));renderOperation();})));if(current.state==="complete")operation.append(el("p","Restore completed and validated. Sign in again to use the restored installation."));}
  toolbar.append(button("Discard temporary packages",()=>action(async()=>{if(!await askDialog("Discard temporary packages","Remove downloaded/export staging files and unactivated uploaded datasets from this server? Active data, previous datasets and recovery markers are kept.",{confirmLabel:"Discard"}))return;await json("/api/admin/discard",post());current={state:"idle"};renderOperation();})));
  const searchField=el("label","Find an analysis","field");searchField.append(search);
- pane.append(toolbar,error,operation,summary,searchField,inventory);document.querySelector("main").append(pane);
+ pane.append(toolbar,error,operation,summary,searchField,inventory,staticData.section);document.querySelector("main").append(pane);
  setInterval(async()=>{if(!pane.classList.contains("active")||busy)return;try{const r=await globalThis.fetch("/api/admin/status");if(r.status===401){error.textContent="The restored service requires a new sign-in.";if(!operation.querySelector('a[href="/auth/login"]')){const a=el("a","Sign in again","button");a.href="/auth/login";operation.append(a);}return;}if(!r.ok)return;const value=await r.json();current=value.operation;if(JSON.stringify(current)!==lastState){lastState=JSON.stringify(current);renderOperation();error.textContent="";}}catch{error.textContent="Service is restarting or unavailable. Reconnecting…";}},2000);
 }

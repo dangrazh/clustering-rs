@@ -80,11 +80,24 @@ try {
   await bob.getByRole("button",{name:"Claim",exact:true}).click();
   await expect(bob.locator("#workflowPanel select").first()).toHaveValue(await bob.evaluate(async()=>{const {state}=await import('/state.js');return state.user.id;}));
   await bob.locator("#closeWorkflow").click();
+  // Wait for the save of this change; the status text can still show an earlier save.
+  const pivotSaved=bob.waitForResponse(r=>r.url().endsWith("/view")&&r.request().method()==="POST"&&r.ok()&&r.request().postData().includes('"pivotRows":[2]'));
   await bob.evaluate(async()=>{const {state}=await import('/state.js');state.pivotRows=[2];});
-  await expect(bob.locator("#personalSaveStatus")).toHaveText("View saved");
+  await pivotSaved;await expect(bob.locator("#personalSaveStatus")).toHaveText("View saved");
   await bob.reload();await bob.getByRole("button",{name:"Analyses",exact:true}).click();await bob.locator("#analysisLibrary").getByRole("button",{name:"Browser acceptance",exact:true}).click();
   await expect.poll(()=>bob.evaluate(async()=>{const {state}=await import('/state.js');return state.pivotRows;})).toEqual([2]);
   await expect.poll(()=>alice.evaluate(async()=>{const {state}=await import('/state.js');return state.pivotRows;})).toEqual([]);
+  // Each pivot drop sends one request; stacked drop listeners used to multiply them until the server answered "busy".
+  await alice.locator("#closeWorkflow").click();await alice.locator('[data-step="pivot"]').click();
+  for(const area of ["rows","columns"]){
+    let sent=0;const count=r=>{if(r.url().endsWith("/pivot")&&r.method()==="POST")sent++;};alice.on("request",count);
+    const done=alice.waitForResponse(r=>r.url().endsWith("/pivot")&&r.ok());
+    await alice.locator(".pivot-field:not(.used):not([title=Number])").first().dragTo(alice.locator(`.pivot-drop-zone[data-pivot-area="${area}"]`));
+    await done;await alice.waitForTimeout(300);alice.off("request",count);expect(sent).toBe(1);
+  }
+  await expect(alice.locator("#pivotTable table")).toBeVisible({timeout:30000});
+  await alice.evaluate(async()=>{const {state}=await import('/state.js');state.pivotRows=[];state.pivotColumns=[];});
+  await alice.locator('[data-step="results"]').click();await alice.locator('[data-workflow-key="1"]').click();
   await alice.locator("#commentForm textarea").fill("Retried once after lost acknowledgment");
   await alice.route("**/api/analyses/*/commands",async route=>{
     await route.fetch();await route.abort("failed");

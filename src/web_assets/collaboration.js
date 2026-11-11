@@ -2,6 +2,7 @@ import { initializeSeries } from "./series.js";
 import { initializeAdmin } from "./admin.js";
 import { jobSummaryText } from "./jobs-view.js";
 import { initializeDashboard } from "./dashboard.js";
+import { initializeCatalog, closeDeletedAnalysis } from "./catalog.js";
 import { state } from "./state.js";
 import { request,fetchReview } from "./api.js";
 import { loadResult,renderResults } from "./results.js";
@@ -69,6 +70,7 @@ export async function initializeCollaboration(){
     document.querySelector("main").inert=true;return;
   }
   initializeSeries(openAnalysis);
+  initializeCatalog(openAnalysis);
   initializeDashboard(openAnalysis).catch(error=>{document.getElementById("dashboardSave").textContent=`Dashboard unavailable: ${error.message}. Reload to retry.`;});
   const events=new EventSource("/api/changes");let refreshing=false,refreshAgain=false;
   async function refreshShared(){
@@ -82,7 +84,7 @@ export async function initializeCollaboration(){
       }while(refreshAgain);
     }finally{refreshing=false;}
   }
-  events.onmessage=event=>{window.dispatchEvent(new Event("dashboard-refresh"));const data=JSON.parse(event.data);window.dispatchEvent(new CustomEvent("series-refresh",{detail:data}));if(data.analysisId&&data.analysisId===state.analysisId)refreshShared().catch(()=>{});if(dialog.open&&["catalog","renameAnalysis","archive","restore"].includes(data.change.kind))refresh().catch(report);};
+  events.onmessage=event=>{window.dispatchEvent(new Event("dashboard-refresh"));const data=JSON.parse(event.data);if(data.change?.kind==="deleteAnalysis"&&data.analysisId&&data.analysisId===state.analysisId){closeDeletedAnalysis(data.change.name);return;}window.dispatchEvent(new CustomEvent("series-refresh",{detail:data}));if(data.analysisId&&data.analysisId===state.analysisId)refreshShared().catch(()=>{});if(dialog.open&&["catalog","renameAnalysis","archive","restore"].includes(data.change.kind))refresh().catch(report);};
   events.onopen=()=>{window.dispatchEvent(new Event("dashboard-refresh"));refreshShared().catch(()=>{});};
   window.addEventListener("shared-save-state",renderSaveStatus);
   const presence=document.createElement("span");presence.id="analysisPresence";bar.append(presence);
@@ -125,12 +127,13 @@ export async function initializeCollaboration(){
     if(!central||state.loadingAnalysis||viewBusy)return;
     const aid=state.analysisId,view=captureView(state),signature=JSON.stringify([aid,view]);if(signature===previousView)return;
     viewBusy=true;const status=document.getElementById("personalSaveStatus");status.textContent="Saving view…";
-    try{await json(`/api/analyses/${aid}/view`,post(view));previousView=signature;status.textContent="View saved";}
-    catch{status.textContent="View not saved — retrying";}finally{viewBusy=false;}
+    try{await json(`/api/analyses/${aid}/view`,post(view));previousView=signature;status.textContent="View saved";status.title="";}
+    catch(error){status.textContent="View not saved — retrying";status.title=error.message;}finally{viewBusy=false;}
   },750);
 }
 let openGeneration=0;
 export async function openAnalysis(aid){
+  state.guided=false;
   const generation=++openGeneration, previous={analysisId:state.analysisId,jobId:state.jobId};
   state.analysisId=aid;state.jobId=aid;state.saveStatus="Saved";
   try{const loaded=await loadResult(aid);if(loaded===false){if(generation===openGeneration&&state.jobId===aid)Object.assign(state,previous);return false;}if(generation===openGeneration)previousView=JSON.stringify([aid,captureView(state)]);return true;}

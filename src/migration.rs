@@ -280,7 +280,7 @@ pub fn pack(root: &Path, destination: &Path) -> Result<Manifest> {
         format: 1,
         engine: "turso-0.7.2".into(),
         application: env!("CARGO_PKG_VERSION").into(),
-        schema: 5,
+        schema: crate::storage::SCHEMA_VERSION,
         created: crate::storage::now(),
         files,
     };
@@ -319,7 +319,7 @@ pub fn unpack(package: &Path, destination: &Path) -> Result<Manifest> {
     let mut header = vec![0; header_len as usize];
     input.read_exact(&mut header)?;
     let manifest: Manifest = serde_json::from_slice(&header)?;
-    ensure!(manifest.format == 1 && manifest.engine == "turso-0.7.2" && manifest.schema == 5 && manifest.application == env!("CARGO_PKG_VERSION"), "Incompatible migration package: use the same application build and supported database version");
+    ensure!(manifest.format == 1 && manifest.engine == "turso-0.7.2" && (crate::storage::OLDEST_PACKAGE_SCHEMA..=crate::storage::SCHEMA_VERSION).contains(&manifest.schema) && manifest.application == env!("CARGO_PKG_VERSION"), "Incompatible migration package: use the same application build and supported database version");
     let mut seen = BTreeSet::new();
     let mut total = 0u64;
     for entry in &manifest.files {
@@ -463,7 +463,9 @@ pub async fn validate_schema(root: &Path) -> Result<()> {
         .await?;
     let c = db.connect()?;
     ensure!(
-        crate::storage::scalar(&c, "SELECT version FROM schema_version").await? == 5,
+        // Older supported packages migrate when the restored store opens.
+        (crate::storage::OLDEST_PACKAGE_SCHEMA..=crate::storage::SCHEMA_VERSION)
+            .contains(&crate::storage::scalar(&c, "SELECT version FROM schema_version").await?),
         "Unsupported package database schema"
     );
     ensure!(
