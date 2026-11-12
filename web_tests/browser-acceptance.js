@@ -24,12 +24,13 @@ try {
     await expect(page.locator("#dashboardGrid .dashboard-error").filter({hasText:"Unable"})).toHaveCount(0);
     await expect(page.locator("#dashboard .dashboard-panel").first()).toHaveCSS("background-color",await page.locator(".topbar").evaluate(e=>getComputedStyle(e).backgroundColor));
     await page.screenshot({path:`target/ui-theme/dashboard-${mode}.png`});
-    await page.getByRole("button",{name:"Analyses",exact:true}).click();
-    await expect(page.locator("#analysisLibrary").getByRole("button",{name:"Browser acceptance",exact:true})).toBeVisible();
+    await page.locator('[data-step="catalog"]').click();
+    const library=page.locator(".dashboard-list[data-list=catalogAnalyses]");
+    await expect(library.getByRole("button",{name:"Browser acceptance",exact:true})).toBeVisible();
     const panelColor=await page.locator(".topbar").evaluate(e=>getComputedStyle(e).backgroundColor);
-    await expect(page.locator("#analysisLibrary")).toHaveCSS("background-color",panelColor);await expect(page.locator(".collaboration-bar")).toHaveCSS("background-color",panelColor);
+    await expect(page.locator("#catalog .dashboard-panel").first()).toHaveCSS("background-color",panelColor);await expect(page.locator(".collaboration-bar")).toHaveCSS("background-color",panelColor);
     await page.screenshot({path:`target/ui-theme/library-${mode}.png`});
-    await page.locator("#analysisLibrary").getByRole("button",{name:"Browser acceptance",exact:true}).click();
+    await library.getByRole("button",{name:"Browser acceptance",exact:true}).click();
     await expect(page.locator("#sharedTitle")).toHaveText("Browser acceptance");
     await expect(page.locator("#clusterList .tree-row").first()).toBeVisible();
     await expect(page.locator("#detailTable table")).toBeVisible();
@@ -84,7 +85,7 @@ try {
   const pivotSaved=bob.waitForResponse(r=>r.url().endsWith("/view")&&r.request().method()==="POST"&&r.ok()&&r.request().postData().includes('"pivotRows":[2]'));
   await bob.evaluate(async()=>{const {state}=await import('/state.js');state.pivotRows=[2];});
   await pivotSaved;await expect(bob.locator("#personalSaveStatus")).toHaveText("View saved");
-  await bob.reload();await bob.getByRole("button",{name:"Analyses",exact:true}).click();await bob.locator("#analysisLibrary").getByRole("button",{name:"Browser acceptance",exact:true}).click();
+  await bob.reload();await bob.locator('[data-step="catalog"]').click();await bob.locator(".dashboard-list[data-list=catalogAnalyses]").getByRole("button",{name:"Browser acceptance",exact:true}).click();
   await expect.poll(()=>bob.evaluate(async()=>{const {state}=await import('/state.js');return state.pivotRows;})).toEqual([2]);
   await expect.poll(()=>alice.evaluate(async()=>{const {state}=await import('/state.js');return state.pivotRows;})).toEqual([]);
   // Each pivot drop sends one request; stacked drop listeners used to multiply them until the server answered "busy".
@@ -199,8 +200,8 @@ try {
 
   for(const [p,mode] of [[alice,"light"],[bob,"dark"]]){
     await p.locator('[data-step="dashboard"]').click();
-    await expect(p.locator('.dashboard-row').first()).toBeVisible();
-    const rows=await p.locator('.dashboard-row').evaluateAll(elements=>elements.map(row=>{
+    await expect(p.locator('#dashboard .dashboard-row').first()).toBeVisible();
+    const rows=await p.locator('#dashboard .dashboard-row').evaluateAll(elements=>elements.map(row=>{
       const title=row.querySelector('button').getBoundingClientRect();
       const meta=row.querySelector('.dashboard-meta').getBoundingClientRect();
       return {overlap:Math.min(title.bottom,meta.bottom)-Math.max(title.top,meta.top),right:meta.left>=title.right};

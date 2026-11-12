@@ -1,4 +1,5 @@
 use crate::clustering::{cluster_incidents, unclustered_rows};
+use crate::labels::{short_descriptions, LabelStyle, Labeler};
 use crate::model::{AnalysisRun, ColumnMapping, RunSettings, SourceTable, TimingMetrics};
 use crate::progress::{ProgressReporter, ProgressUpdate};
 use crate::schema::build_records;
@@ -46,6 +47,16 @@ pub fn run_analysis_with_progress(
     settings: RunSettings,
     progress: impl Fn(ProgressUpdate) + Send + Sync + 'static,
 ) -> Result<AnalysisRun> {
+    run_analysis_labeled(source, mapping, settings, LabelStyle::default(), progress)
+}
+
+pub fn run_analysis_labeled(
+    source: SourceTable,
+    mapping: ColumnMapping,
+    settings: RunSettings,
+    label_style: LabelStyle,
+    progress: impl Fn(ProgressUpdate) + Send + Sync + 'static,
+) -> Result<AnalysisRun> {
     const TOTAL_STEPS: usize = 8;
     let reporter = ProgressReporter::new(progress);
 
@@ -73,7 +84,10 @@ pub fn run_analysis_with_progress(
     let preprocessing_ms = preprocessing_start.elapsed().as_millis();
 
     let clustering_start = Instant::now();
-    let clusters = cluster_incidents(&processed_incidents, &settings, Some(&reporter));
+    let titles = short_descriptions(&source, &mapping, &processed_incidents);
+    let labeler = Labeler::new(&processed_incidents, titles, &settings.label_terms, label_style);
+    let clusters = cluster_incidents(&processed_incidents, &settings, &labeler, Some(&reporter));
+    drop(labeler);
     let clustering_ms = clustering_start.elapsed().as_millis();
     let unclustered_row_indices =
         unclustered_rows(&processed_incidents, &clusters, Some(&reporter));

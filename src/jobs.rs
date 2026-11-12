@@ -64,6 +64,9 @@ pub struct Input {
     pub source: SourceTable,
     pub mapping: ColumnMapping,
     pub settings: RunSettings,
+    /// From the application configuration; older queued inputs use the default.
+    #[serde(default)]
+    pub label_style: crate::labels::LabelStyle,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -269,10 +272,11 @@ pub fn worker(input: &Path, output: &Path) -> Result<()> {
     );
     let input: Input =
         serde_json::from_reader(std::io::BufReader::new(std::fs::File::open(input)?))?;
-    let mut run = crate::worker::run_analysis_with_progress(
+    let mut run = crate::worker::run_analysis_labeled(
         input.source,
         input.mapping,
         input.settings,
+        input.label_style,
         |progress| {
             if let Ok(line) = serde_json::to_string(&progress) {
                 println!("{line}");

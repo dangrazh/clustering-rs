@@ -1,4 +1,4 @@
-use crate::labels::summarize_cluster;
+use crate::labels::{GroupProfile, Labeler};
 use crate::model::{Cluster, ClusterId, IncidentRecord, RowIndex, RunSettings, Subgroup, TermId};
 use crate::progress::{ParallelProgressSpec, ProgressReporter};
 use crate::text::extract_features;
@@ -18,6 +18,7 @@ const MAX_SUBGROUP_RECLUSTER_SIZE: usize = 5_000;
 pub fn cluster_incidents(
     records: &[IncidentRecord],
     settings: &RunSettings,
+    labeler: &Labeler,
     reporter: Option<&ProgressReporter>,
 ) -> Vec<Cluster> {
     if records.is_empty() {
@@ -119,8 +120,10 @@ pub fn cluster_incidents(
         .map(|(index, mut rows)| {
             rows.sort_unstable();
             let id = ClusterId(index + 1);
-            let label = summarize_cluster(id, &rows, records, &settings.label_terms);
-            let subgroups = build_subgroups(id, &rows, records, settings);
+            let profile = labeler.profile(&rows);
+            let subgroups = build_subgroups(id, &rows, records, settings, labeler, &profile);
+            let themes = subgroups.iter().map(|s| s.incident_row_indices.as_slice()).collect::<Vec<_>>();
+            let label = labeler.cluster_label(id, &rows, &profile, &themes);
             if let Some(tracker) = &cluster_tracker {
                 tracker.advance(1);
             }
@@ -365,11 +368,13 @@ fn build_subgroups(
     rows: &[RowIndex],
     records: &[IncidentRecord],
     settings: &RunSettings,
+    labeler: &Labeler,
+    parent: &GroupProfile,
 ) -> Vec<Subgroup> {
     if rows.len() <= settings.minimum_cluster_size || rows.len() > MAX_SUBGROUP_RECLUSTER_SIZE {
         return vec![Subgroup {
             id: 1,
-            label: summarize_cluster(cluster_id, rows, records, &settings.label_terms),
+            label: labeler.cluster_label(cluster_id, rows, parent, &[]),
             incident_row_indices: rows.to_vec(),
         }];
     }
@@ -403,7 +408,7 @@ fn build_subgroups(
             rows.sort_unstable();
             Subgroup {
                 id: index + 1,
-                label: summarize_cluster(cluster_id, &rows, records, &settings.label_terms),
+                label: labeler.theme_label(cluster_id, &rows, &labeler.profile(&rows), parent),
                 incident_row_indices: rows,
             }
         })
@@ -476,7 +481,8 @@ mod tests {
             ..Default::default()
         };
 
-        let clusters = cluster_incidents(&records, &settings, None);
+        let labeler = Labeler::new(&records, Vec::new(), &settings.label_terms, Default::default());
+        let clusters = cluster_incidents(&records, &settings, &labeler, None);
 
         assert_eq!(clusters.len(), 2);
         assert!(clusters.iter().all(|cluster| cluster.size() == 3));

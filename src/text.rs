@@ -217,7 +217,7 @@ pub fn feature_terms(input: &str) -> Vec<String> {
     terms
 }
 
-fn is_stopword(token: &str) -> bool {
+pub(crate) fn is_stopword(token: &str) -> bool {
     STOPWORDS.contains(&token)
 }
 

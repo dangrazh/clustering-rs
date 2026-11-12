@@ -29,7 +29,8 @@ pub fn suggest_mapping(headers: &[String]) -> ColumnMapping {
             "category" => mapping.category = Some(index),
             "priority" => {}
             "assignmentgroup" | "assignedgroup" => mapping.assignment_group = Some(index),
-            "service" | "businessservice" => mapping.service = Some(index),
+            "service" | "businessservice" | "serviceimpacted" | "impactedservice"
+            | "affectedservice" | "serviceaffected" => mapping.service = Some(index),
             "configurationitem" | "ci" | "cmdbci" => mapping.configuration_item = Some(index),
             "created" | "createddate" | "opened" | "openedat" | "date" => {
                 mapping.date = Some(index)
@@ -251,6 +252,14 @@ mod tests {
         assert_eq!(mapping.short_description, Some(1));
         assert_eq!(mapping.category, Some(2));
         assert_eq!(mapping.assignment_group, Some(3));
+    }
+
+    #[test]
+    fn suggests_impacted_service_columns() {
+        for header in ["Service Impacted", "Impacted Service", "Affected service", "Service affected"] {
+            let mapping = suggest_mapping(&["Number".to_owned(), header.to_owned()]);
+            assert_eq!(mapping.service, Some(1), "{header}");
+        }
     }
 
     #[test]

@@ -1122,12 +1122,8 @@ footer {
 .app-dialog input[type="checkbox"] { accent-color: var(--accent); }
 .dialog-message { white-space: pre-wrap; overflow-wrap: anywhere; }
 .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-#analysisSearch { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
-#analysisSearch .field { flex: 1 1 220px; }
-.archive-filter { display: flex; gap: 6px; align-items: center; min-height: var(--control-height); }
-#analysisList, .jobs-list { display: grid; gap: 8px; }
-#analysisList p, .job-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
-#analysisList p button:first-child { flex: 1 1 220px; text-align: left; overflow-wrap: anywhere; }
+.jobs-list { display: grid; gap: 8px; }
+.job-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .job-description { flex: 1 1 280px; overflow-wrap: anywhere; }
 .job-metadata { display: block; margin-top: 6px; color: var(--muted); font-size: var(--text-sm); }
 .login-main { display: grid; align-content: start; justify-items: center; padding-top: clamp(24px, 10vh, 100px); }
@@ -1154,7 +1150,7 @@ footer {
 .dashboard-list[data-list=mine], .dashboard-list[data-list=all] { --columns:minmax(150px,1fr) 130px 120px 60px; --min-width:520px; }
 .dashboard-list[data-list=jobs] { --columns:120px 64px minmax(120px,1fr) 120px 72px; --min-width:560px; }
 .dashboard-list:is([data-list=assigned], [data-list=assignedAll]) { --columns:minmax(200px,1fr) 150px 72px; --min-width:460px; }
-.dashboard-list[data-list=catalogAnalyses] { --columns:minmax(180px,1fr) 120px 132px 60px 200px; --min-width:740px; }
+.dashboard-list[data-list=catalogAnalyses] { --columns:minmax(130px,1fr) 100px 116px 52px 100px; --min-width:530px; }
 .dashboard-list[data-list=catalogJobs] { --columns:132px 64px minmax(160px,1fr) 132px 72px; --min-width:620px; }
 .dashboard-list[data-list=catalogJobs][data-scope=all] { --columns:132px 110px 64px minmax(160px,1fr) 132px 72px; --min-width:740px; }
 .dashboard-list[data-list=static] { --columns:minmax(140px,1fr) 70px minmax(150px,1.2fr) minmax(150px,1.2fr) 132px 330px; --min-width:1000px; height:auto; min-height:120px; max-height:420px; }
@@ -1177,6 +1173,7 @@ footer {
 /* All assigned work: one band per assignee above that person's analyses. */
 .dashboard-list .dashboard-assignee { position:sticky; top:23px; z-index:1; min-width:var(--min-width); padding:4px 8px; border-bottom:1px solid var(--line); background:var(--active); font-size:var(--text-sm); font-weight:700; }
 .dashboard-actions { display:flex; justify-content:flex-end; gap:4px; min-width:0; }
+.dashboard-list .dashboard-row .dashboard-action-menu { width:100%; min-height:21px; padding:0 4px; font-size:var(--text-xs); }
 .dashboard-list .dashboard-row .dashboard-action.danger:not(:disabled) { color:var(--danger); }
 .dashboard-number { font-variant-numeric:tabular-nums; text-align:right; }
 .dashboard-list .dashboard-row .dashboard-action { min-height:21px; padding:0 8px; font-size:var(--text-xs); }

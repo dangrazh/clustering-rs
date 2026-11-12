@@ -2,7 +2,7 @@
 import {state} from "./state.js";
 import {loadResult} from "./results.js";
 import {listenForProgress} from "./analysis.js";
-import {askDialog,noticeDialog,showStep} from "./ui.js";
+import {askDialog,noticeDialog,showStep,showBusy,hideOverlay} from "./ui.js";
 import {jobSummaryText,jobAction} from "./jobs-view.js";
 import {json,post,node,empty,cell,dateCell,shortDate,head,openButton,moreButton,actionButton,listPanel,replaceList,searchInput,checkbox} from "./list-ui.js";
 
@@ -37,6 +37,15 @@ export function initializeCatalog(openAnalysis){
     if(state.analysisId===a.id)closeDeletedAnalysis(a.name,{quiet:true});
     await refresh();
   }
+  async function regenerate(a){
+    if(!await askDialog("Regenerate titles",`Write new cluster and theme titles for “${a.name}” with the current title rules? Clusters, review statuses, assignments and comments stay as they are, and titles people renamed are kept. Everyone sees the new titles.`,{confirmLabel:"Regenerate titles"}))return;
+    showBusy("Regenerating titles",`Writing new titles for “${a.name}”.`);
+    let result;
+    try{result=await json(`/api/analyses/${a.id}/regenerate-titles`,post({commandId:crypto.randomUUID(),expected:a.version}));}
+    finally{hideOverlay();}
+    await refresh();
+    await noticeDialog(result.changed?`${result.changed.toLocaleString()} cluster and theme titles were updated.`:"The titles are already up to date. Nothing was changed.");
+  }
   function renderAnalyses(){
     if(!data)return;
     replaceList(analyses.list,list=>{
@@ -47,11 +56,20 @@ export function initializeCatalog(openAnalysis){
       for(const a of entries.slice(0,limit)){
         const row=node("div",null,"dashboard-row"),actions=node("span",null,"dashboard-actions");
         const owner=a.owner.id===state.user?.id,deletable=!readOnly()&&(owner||admin());
-        const renameButton=actionButton("Rename",()=>rename(a)),archiveButton=actionButton(a.archived?"Restore":"Archive",()=>archive(a)),deleteButton=actionButton("Delete",()=>remove(a));
-        renameButton.disabled=readOnly()||a.archived;archiveButton.disabled=readOnly();deleteButton.disabled=!deletable;deleteButton.classList.add("danger");
-        if(a.archived&&!readOnly())renameButton.title="Restore the analysis to rename it.";
-        if(!deletable&&!readOnly())deleteButton.title="Only the owner or a SysAdmin can delete this analysis.";
-        actions.append(renameButton,archiveButton,deleteButton);
+        // One compact menu keeps every action reachable however narrow the pane is.
+        // Unavailable actions stay listed, disabled, with the reason in their label.
+        const ownerOnly=!deletable&&!readOnly()?" (owner or SysAdmin only)":"",restoreFirst=a.archived?" (restore first)":"";
+        const choices=[
+          ["rename","Rename…",readOnly()||a.archived,a.archived&&!readOnly()?restoreFirst:"",()=>rename(a)],
+          ["titles","Regenerate titles…",!deletable||a.archived,ownerOnly||(deletable?restoreFirst:""),()=>regenerate(a)],
+          ["archive",a.archived?"Restore":"Archive…",readOnly(),"",()=>archive(a)],
+          ["delete","Delete permanently…",!deletable,ownerOnly,()=>remove(a)],
+        ];
+        const menu=node("select",null,"dashboard-action-menu");menu.setAttribute("aria-label",`Actions for ${a.name}`);menu.disabled=readOnly();
+        menu.append(new Option("Actions…",""));
+        for(const [value,text,disabled,reason] of choices){const option=new Option(text+reason,value);option.disabled=disabled;menu.append(option);}
+        menu.onchange=()=>{const choice=choices.find(c=>c[0]===menu.value);menu.value="";if(choice)Promise.resolve().then(choice[4]).catch(e=>noticeDialog(e.message));};
+        actions.append(menu);
         row.append(openButton(a.name,`analysis:${a.id}`,()=>openAnalysis(a.id)),cell(a.owner.name),dateCell(new Date(a.created*1000)),cell(a.archived?"Archived":"Active"),actions);list.append(row);
       }
       if(entries.length>limit)list.append(moreButton("Show more",()=>{limit+=200;renderAnalyses();}));

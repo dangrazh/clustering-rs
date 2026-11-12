@@ -9,6 +9,7 @@ fn input() -> Input {
         source: run.source,
         mapping: run.mapping,
         settings: run.settings,
+        label_style: Default::default(),
     }
 }
 #[tokio::test]

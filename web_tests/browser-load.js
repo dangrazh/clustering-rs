@@ -8,10 +8,11 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(process.env.FIXTURE_URL);
   await expect(page.locator("#signedInUser")).toHaveText("Alice");
-  await page.getByRole("button",{name:"Analyses",exact:true}).click();
+  await page.locator('[data-step="catalog"]').click();
+  const open = page.locator(".dashboard-list[data-list=catalogAnalyses]").getByRole("button",{name:"Browser acceptance",exact:true});
+  await expect(open).toBeVisible({timeout:60000});
   const started = performance.now();
-  await page.locator("#analysisLibrary").getByRole("button",{name:"Browser acceptance",exact:true}).click();
-  await expect(page.locator("#analysisLibrary")).not.toBeVisible({timeout:60000});
+  await open.click();
   await expect(page.locator('[data-workflow-key="1"]')).toBeVisible({timeout:60000});
   const elapsedMs = Math.round(performance.now() - started);
   const measurements = await page.evaluate(async () => {

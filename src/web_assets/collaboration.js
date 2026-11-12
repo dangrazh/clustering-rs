@@ -4,7 +4,7 @@ import { jobSummaryText } from "./jobs-view.js";
 import { initializeDashboard } from "./dashboard.js";
 import { initializeCatalog, closeDeletedAnalysis } from "./catalog.js";
 import { state } from "./state.js";
-import { request,fetchReview } from "./api.js";
+import { request,fetchReview,fetchResult } from "./api.js";
 import { loadResult,renderResults } from "./results.js";
 import { applyReviewResponse,renderSaveStatus,refreshWorkflow } from "./workflow.js";
 import { captureView } from "./view-state.js";
@@ -17,38 +17,8 @@ let previousView="",viewBusy=false,saveCommand=null;
 const viewId=crypto.randomUUID();
 export async function initializeCollaboration(){
   const bar=document.createElement("section");bar.className="collaboration-bar";
-  bar.innerHTML='<span id="signedInUser"></span> <button id="openLibrary">Analyses</button> <button id="centralSave">Save centrally</button> <span id="sharedTitle"></span> <span id="personalSaveStatus"></span> <button id="signOut">Sign out</button>';
+  bar.innerHTML='<span id="signedInUser"></span> <button id="centralSave">Save centrally</button> <span id="sharedTitle"></span> <span id="personalSaveStatus"></span> <button id="signOut">Sign out</button>';
   document.querySelector("header").after(bar);
-  const dialog=document.createElement("dialog");dialog.id="analysisLibrary";dialog.className="app-dialog";dialog.setAttribute("aria-labelledby","libraryTitle");
-  dialog.innerHTML='<h2 id="libraryTitle">Shared analyses</h2><form id="analysisSearch"><label class="field">Name <input name="search"></label> <label class="archive-filter"><input name="archived" type="checkbox"> Show archive</label> <button>Search</button></form><p id="libraryError" class="workflow-error" role="alert"></p><div id="analysisList"></div><div class="dialog-actions"><button id="closeLibrary">Close</button></div>';
-  document.body.append(dialog);
-  const error=document.getElementById("libraryError");
-  const report=e=>{error.textContent=e.message;};
-  async function refresh(){
-    const form=document.getElementById("analysisSearch");
-    const entries=await json(`/api/analyses?search=${encodeURIComponent(form.elements.search.value)}&archived=${form.elements.archived.checked}`);
-    const list=document.getElementById("analysisList");list.replaceChildren();
-    for(const analysis of entries){
-      const row=document.createElement("p"),open=document.createElement("button");open.textContent=analysis.name;row.append(open);
-      open.onclick=async()=>{try{await openAnalysis(analysis.id);dialog.close();}catch(e){report(e);}};
-      for(const action of analysis.archived?["restore"]:["renameAnalysis","archive"]){
-        if(state.role==="Read Only User")continue;
-        const button=document.createElement("button");button.textContent={restore:"Restore",renameAnalysis:"Rename",archive:"Archive"}[action];row.append(" ",button);
-        button.onclick=async()=>{
-          try{
-            let name;
-            if(action==="renameAnalysis"){name=await askDialog("Rename analysis","Choose a unique analysis name.",{value:analysis.name,confirmLabel:"Rename"});if(!name)return;}
-            if(action==="archive"&&!await askDialog("Archive analysis","Everyone currently reviewing this analysis will be notified and editing will stop. Unsaved edits must wait until restoration.",{confirmLabel:"Archive"}))return;
-            await json(`/api/analyses/${analysis.id}/commands`,post({commandId:crypto.randomUUID(),target:"",expected:analysis.version,action:{type:action,name}}));await refresh();
-          }catch(e){report(e);}
-        };
-      }
-      list.append(row);
-    }
-  }
-  document.getElementById("openLibrary").onclick=()=>{dialog.showModal();refresh().catch(report);};
-  document.getElementById("closeLibrary").onclick=()=>dialog.close();
-  document.getElementById("analysisSearch").onsubmit=e=>{e.preventDefault();refresh().catch(report);};
   document.getElementById("centralSave").onclick=async()=>{
     if(!state.jobId||state.analysisId)return;
     const name=await askDialog("Save analysis centrally","Choose a unique name for this shared analysis.",{value:saveCommand?.name||"",confirmLabel:"Save"});if(!name)return;
@@ -84,7 +54,7 @@ export async function initializeCollaboration(){
       }while(refreshAgain);
     }finally{refreshing=false;}
   }
-  events.onmessage=event=>{window.dispatchEvent(new Event("dashboard-refresh"));const data=JSON.parse(event.data);if(data.change?.kind==="deleteAnalysis"&&data.analysisId&&data.analysisId===state.analysisId){closeDeletedAnalysis(data.change.name);return;}window.dispatchEvent(new CustomEvent("series-refresh",{detail:data}));if(data.analysisId&&data.analysisId===state.analysisId)refreshShared().catch(()=>{});if(dialog.open&&["catalog","renameAnalysis","archive","restore"].includes(data.change.kind))refresh().catch(report);};
+  events.onmessage=event=>{window.dispatchEvent(new Event("dashboard-refresh"));const data=JSON.parse(event.data);if(data.change?.kind==="deleteAnalysis"&&data.analysisId&&data.analysisId===state.analysisId){closeDeletedAnalysis(data.change.name);return;}if(data.change?.kind==="regenerateTitles"&&data.analysisId&&data.analysisId===state.analysisId){applyRegeneratedTitles(data.analysisId,data.change).catch(()=>{});return;}window.dispatchEvent(new CustomEvent("series-refresh",{detail:data}));if(data.analysisId&&data.analysisId===state.analysisId)refreshShared().catch(()=>{});};
   events.onopen=()=>{window.dispatchEvent(new Event("dashboard-refresh"));refreshShared().catch(()=>{});};
   window.addEventListener("shared-save-state",renderSaveStatus);
   const presence=document.createElement("span");presence.id="analysisPresence";bar.append(presence);
@@ -130,6 +100,21 @@ export async function initializeCollaboration(){
     try{await json(`/api/analyses/${aid}/view`,post(view));previousView=signature;status.textContent="View saved";status.title="";}
     catch(error){status.textContent="View not saved — retrying";status.title=error.message;}finally{viewBusy=false;}
   },750);
+}
+// New generated titles replace the loaded ones in place, so nobody loses their pane, selection or filters.
+// Titles people renamed are review data and keep taking precedence.
+async function applyRegeneratedTitles(aid,change){
+  const run=await fetchResult(aid);
+  if(state.analysisId!==aid||!state.analysis)return;
+  const fresh=new Map(run.clusters.map(c=>[c.id,c]));
+  for(const cluster of state.analysis.clusters){
+    const next=fresh.get(cluster.id);if(!next)continue;
+    cluster.label=next.label;
+    const themes=new Map(next.subgroups.map(t=>[t.id,t.label]));
+    for(const theme of cluster.subgroups)if(themes.has(theme.id))theme.label=themes.get(theme.id);
+  }
+  renderResults(true);
+  if(change.byId!==state.user?.id)await noticeDialog(`${change.by} regenerated the cluster and theme titles of this analysis. Renamed titles were kept.`);
 }
 let openGeneration=0;
 export async function openAnalysis(aid){

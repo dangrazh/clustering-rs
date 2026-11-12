@@ -865,6 +865,7 @@ mod tests {
                 source: run.source,
                 mapping: run.mapping,
                 settings: run.settings,
+                label_style: Default::default(),
             },
         )
         .await?;

@@ -444,6 +444,55 @@ pub(super) async fn route(
             }
             json_response(StatusCode::OK, &json!({"deleted":true}))
         }
+        (Method::POST, "regenerate-titles") => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Regenerate {
+                command_id: String,
+                expected: u64,
+            }
+            let payload: Regenerate = body(request).await?;
+            let admin = state.role == crate::auth::Role::SysAdmin;
+            // Fail fast before the expensive part; the store checks again when it commits.
+            let info = store.check_regenerate_titles(&user, admin, aid, payload.expected).await?;
+            let loaded = state.inner.artifacts.load(&info.artifact).await?;
+            let style = state.inner.config.label_style;
+            let source = loaded.clone();
+            let (run, changed) = tokio::task::spawn_blocking(move || {
+                let mut run = (*source.run).clone();
+                let changed = crate::labels::relabel(&mut run, style);
+                (run, changed)
+            })
+            .await?;
+            if changed == 0 {
+                return json_response(StatusCode::OK, &json!({"changed":0,"version":info.version}));
+            }
+            let mut review = loaded.review.clone();
+            review.fingerprint = crate::session::fingerprint(&run)?;
+            let mut meta = loaded.metadata.clone();
+            meta.summaries = crate::storage::Store::entity_summaries(&run);
+            let artifact = state
+                .inner
+                .artifacts
+                .publish(Arc::new(run), review.clone(), loaded.view.clone(), meta.clone())
+                .await?;
+            let outcome = store
+                .regenerate_titles(
+                    &user,
+                    admin,
+                    aid,
+                    &payload.command_id,
+                    payload.expected,
+                    &artifact,
+                    &review.fingerprint,
+                    &meta.summaries,
+                )
+                .await?;
+            if let Some(name) = outcome["replaced"].as_str() {
+                state.inner.artifacts.remove(name).await?;
+            }
+            json_response(StatusCode::OK, &json!({"changed":changed,"version":outcome["version"]}))
+        }
         (Method::POST, "presence") => {
             let heartbeat: Heartbeat = body(request).await?;
             uuid::Uuid::parse_str(&heartbeat.view_id)?;

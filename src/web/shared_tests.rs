@@ -451,6 +451,7 @@ async fn supervised_child_publishes_reopenable_result() -> Result<()> {
             source: run.source,
             mapping: run.mapping,
             settings: run.settings,
+            label_style: Default::default(),
         },
     )
     .await?;
@@ -742,6 +743,77 @@ async fn series_http_historical_insertion_replacement_and_access() -> Result<()>
     assert_eq!(chosen["weekly"]["undated"], 21 + 22);
     assert!(chosen["weekly"]["weeks"].as_array().unwrap().is_empty());
     assert!(!weekly("Missing").await?.status().is_success());
+    Ok(())
+}
+
+#[tokio::test]
+async fn regenerating_titles_keeps_renames_and_respects_owners_and_series() -> Result<()> {
+    let (dir, state, base, alice, bob) = fixture_mode(true).await?;
+    std::fs::write(
+        dir.path().join("allowed-users.json"),
+        serde_json::to_vec(&json!([
+            {"email":"alice@example.invalid","name":"Alice"},
+            {"email":"bob@example.invalid","name":"Bob"}
+        ]))?,
+    )?;
+    let client = reqwest::Client::new();
+    let a = state.inner.auth.session(&format!("app_session={alice}")).await?;
+    let b = state.inner.auth.session(&format!("app_session={bob}")).await?;
+    let saved = |name: &'static str| {
+        let state = state.clone();
+        let user = a.user.clone();
+        async move {
+            let run = Arc::new(fixtures::run(20));
+            let review = ReviewData::new(&run)?;
+            let metadata = crate::storage::PortableMeta {
+                summaries: crate::storage::Store::entity_summaries(&run),
+                ..Default::default()
+            };
+            let artifact = state.inner.artifacts.publish(run, review.clone(), ViewState::default(), metadata.clone()).await?;
+            let aid = state.inner.store.create(&user, &id(), name, &artifact, crate::storage::InitialReview { review: &review, view: &ViewState::default(), metadata: &metadata }).await?;
+            anyhow::Ok((aid, artifact))
+        }
+    };
+    let (aid, old_artifact) = saved("Retitled").await?;
+    let url = |aid: &str, op: &str| format!("{base}/api/analyses/{aid}/{op}");
+    let regenerate = |token: &str, csrf: &str, aid: &str, expected: u64| {
+        let (client, target, token, csrf) = (client.clone(), url(aid, "regenerate-titles"), token.to_owned(), csrf.to_owned());
+        async move { post(&client, &target, &token, &csrf, json!({"commandId":id(),"expected":expected})).await }
+    };
+    post(&client, &url(&aid, "commands"), &alice, &a.csrf, json!({"commandId":id(),"target":"1:2","expected":0,"action":{"type":"rename","label":"Kept by Alice"}}))
+        .await?
+        .error_for_status()?;
+
+    // Titles are analysis-wide: only the owner or a SysAdmin may regenerate them.
+    assert_eq!(regenerate(&bob, &b.csrf, &aid, 0).await?.status(), 403);
+    let done: Value = regenerate(&alice, &a.csrf, &aid, 0).await?.error_for_status()?.json().await?;
+    assert!(done["changed"].as_u64().unwrap() > 0, "{done}");
+    assert_eq!(done["version"], 1);
+
+    let result: Value = client.get(url(&aid, "result")).header("Cookie", format!("app_session={alice}")).send().await?.error_for_status()?.json().await?;
+    let cluster = &result["clusters"][0];
+    assert_ne!(cluster["label"], "Connectivity group 1");
+    assert_ne!(cluster["subgroups"][0]["label"], "Network connection");
+    // The review still matches the analysis (new fingerprint) and the rename still wins.
+    let review: Value = client.get(url(&aid, "review")).header("Cookie", format!("app_session={alice}")).send().await?.error_for_status()?.json().await?;
+    assert_eq!(review["review"]["annotations"]["labels"]["1:2"], "Kept by Alice");
+    let dashboard: Value = client.get(format!("{base}/api/dashboard/data?offset=0")).header("Cookie", format!("app_session={alice}")).send().await?.json().await?;
+    assert_eq!(dashboard["analyses"][0]["version"], 1);
+    // The replaced artifact is no longer referenced, so its file is gone.
+    assert!(state.inner.artifacts.load(&old_artifact).await.is_err());
+    let again: Value = regenerate(&alice, &a.csrf, &aid, 1).await?.error_for_status()?.json().await?;
+    assert_eq!(again["changed"], 0);
+    // A stale version is refused.
+    assert_eq!(regenerate(&alice, &a.csrf, &aid, 0).await?.status(), 409);
+
+    // Series identify periods by fingerprint, so member analyses keep their titles.
+    let (member, _) = saved("Series member").await?;
+    let c = state.inner.store.connect().await?;
+    c.execute("INSERT INTO trend_series VALUES('s1','Monthly','monthly',0,0,'{}')", ()).await?;
+    c.execute("INSERT INTO trend_membership VALUES(?,'s1','2026-01')", [member.as_str()]).await?;
+    let refused = regenerate(&alice, &a.csrf, &member, 0).await?;
+    assert_eq!(refused.status(), 409);
+    assert!(refused.text().await?.contains("Monthly"));
     Ok(())
 }
 

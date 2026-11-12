@@ -384,6 +384,7 @@ async fn handle(request: Request<Incoming>, mut state: WebState) -> Result<Respo
                 "/session/save",
                 "/save-central",
                 "/worksheet",
+                "/regenerate-titles",
             ]
             .iter()
             .any(|suffix| path.ends_with(suffix))
@@ -706,6 +707,7 @@ async fn start_analysis_endpoint(
             source,
             mapping: payload.mapping,
             settings: payload.settings,
+            label_style: state.inner.config.label_style,
         },
     )
     .await?;

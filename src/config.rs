@@ -43,6 +43,8 @@ impl RuntimeConfig {
 #[serde(default)]
 pub struct AppConfig {
     pub label_terms: LabelTermPolicy,
+    /// "descriptive" (default) or "keywords" for the original keyword titles.
+    pub label_style: crate::labels::LabelStyle,
 }
 
 impl AppConfig {
