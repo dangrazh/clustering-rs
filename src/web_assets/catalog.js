@@ -20,6 +20,14 @@ export function initializeCatalog(openAnalysis){
   const grid=document.getElementById("catalogGrid");if(!grid)return;
   const analyses=listPanel("catalogAnalyses","Analyses"),jobs=listPanel("catalogJobs","Jobs");grid.append(analyses.panel,jobs.panel);
   const filter={search:"",archived:false},jobFilter={all:true};let data=null,jobData=null,limit=200,busy=false,again=false;
+  // The pane polls every few seconds. Rebuilding a list replaces its controls, which closes an
+  // open Actions menu, so a list is rebuilt only when its data changed and never while a menu
+  // in it is in use; the deferred rebuild runs once the menu loses focus.
+  let shownAnalyses="",shownJobs="",deferred=false;
+  const menuInUse=()=>document.activeElement?.tagName==="SELECT"&&analyses.list.contains(document.activeElement);
+  analyses.list.addEventListener("focusout",()=>{if(deferred)setTimeout(()=>{if(deferred&&!menuInUse()){deferred=false;renderAnalyses();}},0);});
+  function updateAnalyses(value){const text=JSON.stringify(value);if(text===shownAnalyses&&!deferred)return;data=value;shownAnalyses=text;if(menuInUse()){deferred=true;return;}deferred=false;renderAnalyses();}
+  function updateJobs(value){const text=JSON.stringify(value)+jobFilter.all;if(text===shownJobs)return;jobData=value;shownJobs=text;renderJobs();}
   analyses.controls.append(searchInput("Search analyses","",value=>{filter.search=value;renderAnalyses();}),checkbox("Show archived",false,value=>{filter.archived=value;renderAnalyses();}));
   const isVisible=()=>document.getElementById("catalog").classList.contains("active")&&!document.hidden;
   function command(a,type,extra={}){return json(`/api/analyses/${a.id}/commands`,post({commandId:crypto.randomUUID(),target:"",expected:a.version,action:{type,...extra}}));}
@@ -100,8 +108,8 @@ export function initializeCatalog(openAnalysis){
   async function refresh(){
     if(!isVisible())return;if(busy){again=true;return;}busy=true;
     try{do{again=false;await Promise.all([
-      fetchAnalyses().then(value=>{analyses.error.textContent="";data=value;renderAnalyses();}).catch(e=>{analyses.error.textContent=`Unable to refresh: ${e.message}`;}),
-      json(`/api/jobs${admin()&&jobFilter.all?"?scope=all":""}`).then(value=>{jobs.error.textContent="";jobData=value;renderJobs();}).catch(e=>{jobs.error.textContent=`Unable to refresh: ${e.message}`;}),
+      fetchAnalyses().then(value=>{analyses.error.textContent="";updateAnalyses(value);}).catch(e=>{analyses.error.textContent=`Unable to refresh: ${e.message}`;}),
+      json(`/api/jobs${admin()&&jobFilter.all?"?scope=all":""}`).then(value=>{jobs.error.textContent="";updateJobs(value);}).catch(e=>{jobs.error.textContent=`Unable to refresh: ${e.message}`;}),
     ]);}while(again);}finally{busy=false;}
   }
   // The role is known only after sign-in; operators can switch between everyone's jobs and their own.
