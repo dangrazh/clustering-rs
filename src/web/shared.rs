@@ -706,6 +706,9 @@ async fn changes(request: Request<Incoming>, state: WebState) -> Result<Response
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok())
         .filter(|v| *v >= 0);
+    // Subscribe before reading the cursor, so nothing published in between is missed;
+    // anything both stored and broadcast is skipped by its sequence.
+    let receiver = state.inner.store.subscribe();
     let current = state.inner.store.delivery_cursor().await?;
     let after = previous.filter(|v| *v <= current).unwrap_or(current);
     let ready = stream::once(async move {
@@ -713,42 +716,121 @@ async fn changes(request: Request<Incoming>, state: WebState) -> Result<Response
             "id: {after}\nevent: ready\ndata: {{}}\n\n"
         ))))
     });
-    let stream = stream::unfold(
-        (state, cookies, after),
-        |(state, cookies, mut after)| async move {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            if state.inner.auth.session(&cookies).await.is_err() {
-                return None;
-            }
-            let result = state.inner.store.events(after).await;
-            let mut frame = String::new();
-            match result {
-                Ok(events) => {
-                    for event in events {
-                        after = event["sequence"].as_i64().unwrap();
-                        frame.push_str(&format!("id: {after}\ndata: {event}\n\n"));
-                    }
-                }
-                Err(error) => tracing::warn!(%error,"Change delivery will retry"),
-            }
-            if frame.is_empty() {
-                frame = ": heartbeat\n\n".into();
-            }
-            Some((
-                Ok::<_, Infallible>(Frame::data(Bytes::from(frame))),
-                (state, cookies, after),
-            ))
-        },
-    );
+    let changes = ChangeStream {
+        user: state.user.as_ref().map(|u| u.id.clone()).unwrap_or_default(),
+        admin: state.role == crate::auth::Role::SysAdmin,
+        state,
+        cookies,
+        receiver,
+        after,
+        catch_up: after < current,
+        heartbeat: tokio::time::interval_at(
+            tokio::time::Instant::now() + CHANGE_HEARTBEAT,
+            CHANGE_HEARTBEAT,
+        ),
+    };
+    let stream = stream::unfold(changes, |mut changes| async move {
+        let frame = changes.next_frame().await?;
+        Some((Ok::<_, Infallible>(Frame::data(Bytes::from(frame))), changes))
+    });
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache, no-transform")
         .header("x-accel-buffering", "no")
         .body(BodyExt::boxed(StreamBody::new(ready.chain(stream))))?)
 }
+/// How often an idle change stream sends a heartbeat and re-checks the sign-in.
+const CHANGE_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Stored deliveries returned per catch-up read (the LIMIT in `Store::events`).
+const CATCH_UP_PAGE: usize = 100;
+
+/// One browser's change stream. Every stream shares the store's broadcast, so an idle
+/// stream costs no database reads; the stored delivery log is read only to catch up after
+/// connecting late or falling behind.
+struct ChangeStream {
+    state: WebState,
+    cookies: String,
+    user: String,
+    admin: bool,
+    receiver: tokio::sync::broadcast::Receiver<Arc<crate::storage::Change>>,
+    after: i64,
+    catch_up: bool,
+    heartbeat: tokio::time::Interval,
+}
+impl ChangeStream {
+    fn visible(&self, change: &crate::storage::Change) -> bool {
+        match &change.audience {
+            crate::storage::Audience::Everyone => true,
+            crate::storage::Audience::OwnerAndAdmins(owner) => self.admin || *owner == self.user,
+        }
+    }
+    /// The next frame to send, or None once the sign-in ended or the server is stopping.
+    async fn next_frame(&mut self) -> Option<String> {
+        use tokio::sync::broadcast::error::RecvError;
+        loop {
+            if self.catch_up {
+                match self.state.inner.store.events(self.after).await {
+                    Ok(events) => {
+                        self.catch_up = events.len() == CATCH_UP_PAGE;
+                        if !events.is_empty() {
+                            let mut frame = String::new();
+                            for event in events {
+                                self.after = event["sequence"].as_i64().unwrap_or(self.after);
+                                frame.push_str(&format!("id: {}\ndata: {event}\n\n", self.after));
+                            }
+                            return Some(frame);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "Change delivery will retry");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        return Some(": retry\n\n".into());
+                    }
+                }
+            }
+            tokio::select! {
+                received = self.receiver.recv() => match received {
+                    Ok(change) => match change.sequence {
+                        Some(sequence) if sequence <= self.after => {}
+                        Some(sequence) if sequence > self.after + 1 => self.catch_up = true,
+                        Some(sequence) => {
+                            self.after = sequence;
+                            return Some(format!("id: {sequence}\ndata: {}\n\n", change.value));
+                        }
+                        // Live changes have no id, so they never move the browser's resume point.
+                        None if self.visible(&change) => return Some(format!("data: {}\n\n", change.value)),
+                        None => {}
+                    },
+                    // Stored changes are re-read; lost live ones make the browser refresh its panes.
+                    Err(RecvError::Lagged(_)) => {
+                        self.catch_up = true;
+                        return Some("event: resync\ndata: {}\n\n".into());
+                    }
+                    Err(RecvError::Closed) => return None,
+                },
+                _ = self.heartbeat.tick() => {
+                    if self.state.inner.auth.session(&self.cookies).await.is_err() {
+                        return None;
+                    }
+                    return Some(": heartbeat\n\n".into());
+                }
+            }
+        }
+    }
+}
+/// Moves stored changes into the delivery log every 100 ms and announces maintenance
+/// starting or ending. This is the only regular database read behind the change streams.
 pub(super) fn start_publisher(store: Arc<crate::storage::Store>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut paused = crate::migration::paused();
         loop {
+            if crate::migration::paused() != paused {
+                paused = !paused;
+                store.announce(
+                    crate::storage::Audience::Everyone,
+                    json!({"resourceKind":"maintenance","change":{"kind":"maintenance","paused":paused}}),
+                );
+            }
             if let Err(error) = store.publish().await {
                 tracing::warn!(%error,"Durable publication will retry");
             }

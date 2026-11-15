@@ -770,3 +770,22 @@ async fn theme_reviewers_override_inherit_and_conflict_independently() -> Result
     assert!(s.review(&aid, &alice).await?["reviewers"]["1:1"]["value"].is_object());
     Ok(())
 }
+#[tokio::test]
+async fn published_changes_reach_subscribers_in_sequence_with_live_ones_unnumbered() -> Result<()> {
+    let (_dir, s, alice, _bob, aid) = fixture().await?;
+    let mut changes = s.subscribe();
+    s.publish().await?;
+    s.command(aid.clone(), alice.clone(), command("", json!({"type":"archive"}), 0))
+        .await?;
+    s.announce(Audience::OwnerAndAdmins(alice.id.clone()), json!({"resourceKind":"job"}));
+    s.publish().await?;
+    let received: Vec<_> = (0..3).map(|_| changes.try_recv().unwrap()).collect();
+    assert_eq!(received[0].sequence, Some(1));
+    assert_eq!(received[0].value, s.events(0).await?[0]);
+    assert_eq!(received[1].sequence, None);
+    assert_eq!(received[1].audience, Audience::OwnerAndAdmins(alice.id.clone()));
+    assert_eq!(received[2].sequence, Some(2));
+    assert_eq!(received[2].value["change"]["kind"], "archive");
+    assert!(changes.try_recv().is_err());
+    Ok(())
+}

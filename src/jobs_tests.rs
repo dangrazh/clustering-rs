@@ -22,12 +22,27 @@ async fn fifo_restart_cancellation_and_ownership() -> Result<()> {
     let bob = store
         .user("fixture:bob", "Bob", "bob@example.invalid")
         .await?;
+    let mut changes = store.subscribe();
     let first = enqueue(&store, &alice, input()).await?;
     tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     let second = enqueue(&store, &bob, input()).await?;
     assert_eq!(next(&store).await?.unwrap().id, first);
     assert!(change(&store, &first, "queued", "running", None, None).await?);
+    assert!(!change(&store, &first, "queued", "running", None, None).await?);
     assert!(cancel(&store, &alice, false, &second).await.is_err());
+    // Each state change is announced once, to the job's owner and SysAdmins.
+    let announced: Vec<_> = std::iter::from_fn(|| changes.try_recv().ok())
+        .map(|c| (c.audience.clone(), c.value["jobId"].as_str().unwrap().to_owned(), c.value["change"]["state"].as_str().unwrap().to_owned()))
+        .collect();
+    let owner = |user: &crate::storage::User| crate::storage::Audience::OwnerAndAdmins(user.id.clone());
+    assert_eq!(
+        announced,
+        [
+            (owner(&alice), first.clone(), "queued".to_owned()),
+            (owner(&bob), second.clone(), "queued".to_owned()),
+            (owner(&alice), first.clone(), "running".to_owned()),
+        ]
+    );
     drop(store);
     let store = Store::open(dir.path(), 4).await?;
     interrupted(&store).await?;

@@ -1,6 +1,18 @@
 // Dense, table-like lists shared by the Dashboard and the Analyses and Jobs pane.
 import {request} from "./api.js";
 import {noticeDialog} from "./ui.js";
+// Analysis changes that alter the catalog lists: an analysis's existence, name, state or titles.
+export const CATALOG_CHANGES=new Set(["catalog","renameAnalysis","archive","restore","deleteAnalysis","regenerateTitles"]);
+// Analysis changes no list shows: comments and column types appear only inside the analysis.
+export const DETAIL_CHANGES=new Set(["addComment","editComment","deleteComment","columnTypes"]);
+// Rebuilding a list closes any dropdown open in it. Updates that arrive from elsewhere therefore
+// wait until the dropdown loses focus, and only the latest waiting update runs.
+export function menuGuard(root){
+  let pending=null;
+  const open=()=>document.activeElement?.tagName==="SELECT"&&root.contains(document.activeElement);
+  root.addEventListener("focusout",()=>setTimeout(()=>{if(pending&&!open()){const update=pending;pending=null;update();}},0));
+  return {run(update){if(open()){pending=update;return;}pending=null;update();},cancel(){pending=null;}};
+}
 export const post=value=>({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
 export async function json(url,options){const r=await request(url,options),v=await r.json();if(!r.ok)throw Error(v.error||r.statusText);return v;}
 export const node=(tag,text,cls)=>{const e=document.createElement(tag);if(text!=null)e.textContent=text;if(cls)e.className=cls;return e;};

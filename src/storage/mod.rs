@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, Mutex, Weak},
     time::Duration,
 };
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{broadcast, RwLock, Semaphore};
 use turso::{params, Connection};
 use unicode_normalization::UnicodeNormalization;
 
@@ -110,8 +110,27 @@ pub struct Store {
     pub writers: Semaphore,
     locks: Mutex<HashMap<String, Weak<RwLock<()>>>>,
     publisher: tokio::sync::Mutex<()>,
+    changes: broadcast::Sender<Arc<Change>>,
     _instance: std::fs::File,
 }
+/// Who may receive a change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Audience {
+    Everyone,
+    /// The owner of the resource (a user ID) and SysAdmins.
+    OwnerAndAdmins(String),
+}
+/// A change announced to connected browsers. Durable changes are stored as deliveries and
+/// carry their sequence, so a reconnecting browser can catch up; live ones (job and task
+/// progress, maintenance) are not stored and have none.
+#[derive(Clone, Debug)]
+pub struct Change {
+    pub sequence: Option<i64>,
+    pub audience: Audience,
+    pub value: Value,
+}
+/// Connected browsers that fall this far behind catch up from the stored deliveries.
+const CHANGE_BUFFER: usize = 1024;
 /// Current database schema. Packages from version 5 onward are accepted and migrate on open.
 pub const SCHEMA_VERSION: i64 = 6;
 pub const OLDEST_PACKAGE_SCHEMA: i64 = 5;
@@ -192,6 +211,7 @@ impl Store {
             writers: Semaphore::new(writers),
             locks: Mutex::new(HashMap::new()),
             publisher: tokio::sync::Mutex::new(()),
+            changes: broadcast::channel(CHANGE_BUFFER).0,
             _instance: instance,
         });
         let c = s.connect().await?;
@@ -799,6 +819,19 @@ impl Store {
         c.execute("INSERT INTO views VALUES(?,?,?) ON CONFLICT(analysis,user_id) DO UPDATE SET value=excluded.value",params![aid,user.id.clone(),serde_json::to_string(view)?]).await?;
         Ok(())
     }
+    /// Every change from now on, durable and live.
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<Change>> {
+        self.changes.subscribe()
+    }
+    /// Sends a live change to connected browsers. Nobody listening is not an error.
+    pub fn announce(&self, audience: Audience, value: Value) {
+        let _ = self.changes.send(Arc::new(Change {
+            sequence: None,
+            audience,
+            value,
+        }));
+    }
+    /// Moves committed outbox entries into the numbered delivery log and announces them.
     pub async fn publish(&self) -> Result<()> {
         let _m = self.maintenance.read().await;
         let _g = self.publisher.lock().await;
@@ -824,8 +857,10 @@ impl Store {
             drop(rows);
             let mut sequence =
                 scalar(&c, "SELECT COALESCE(MAX(sequence),0) FROM deliveries").await?;
+            let mut published = Vec::with_capacity(batch.len());
             for (oid, aid, value, kind) in batch {
                 sequence += 1;
+                published.push((sequence, delivery(sequence, &kind, &aid, &value)?));
                 c.execute(
                     "INSERT INTO deliveries(sequence,outbox_id,analysis,value,resource_kind,resource_id) VALUES(?,?,?,?,?,?)",
                     params![sequence, oid.clone(), if kind=="analysis"{Some(aid.clone())}else{None}, value, kind, aid],
@@ -834,10 +869,18 @@ impl Store {
                 c.execute("UPDATE outbox SET published=1 WHERE id=?", [oid])
                     .await?;
             }
-            Ok(())
+            Ok(published)
         }
         .await;
-        finish(&c, r).await
+        // Announced only once committed, in sequence order.
+        for (sequence, value) in finish(&c, r).await? {
+            let _ = self.changes.send(Arc::new(Change {
+                sequence: Some(sequence),
+                audience: Audience::Everyone,
+                value,
+            }));
+        }
+        Ok(())
     }
     pub async fn delivery_cursor(&self) -> Result<i64> {
         let c = self.connect().await?;
@@ -848,12 +891,25 @@ impl Store {
         let mut rows=c.query("SELECT sequence,resource_id,value,resource_kind FROM deliveries WHERE sequence>? ORDER BY sequence LIMIT 100",[after]).await?;
         let mut out = vec![];
         while let Some(r) = rows.next().await? {
-            let kind = r.get::<String>(3)?;
-            let resource = r.get::<String>(1)?;
-            out.push(json!({"sequence":r.get::<i64>(0)?,"resourceKind":kind,"analysisId":if kind=="analysis"{Some(resource.clone())}else{None},"seriesId":if kind=="series"{Some(resource)}else{None},"change":serde_json::from_str::<Value>(&r.get::<String>(2)?)?}));
+            out.push(delivery(
+                r.get::<i64>(0)?,
+                &r.get::<String>(3)?,
+                &r.get::<String>(1)?,
+                &r.get::<String>(2)?,
+            )?);
         }
         Ok(out)
     }
+}
+/// A stored change as browsers receive it.
+fn delivery(sequence: i64, kind: &str, resource: &str, value: &str) -> Result<Value> {
+    Ok(json!({
+        "sequence": sequence,
+        "resourceKind": kind,
+        "analysisId": (kind == "analysis").then_some(resource),
+        "seriesId": (kind == "series").then_some(resource),
+        "change": serde_json::from_str::<Value>(value)?,
+    }))
 }
 async fn info(c: &Connection, aid: &str) -> Result<AnalysisInfo> {
     let r = c

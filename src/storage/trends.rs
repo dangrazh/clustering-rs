@@ -325,7 +325,18 @@ impl Store {
             Ok(result)
         }
         .await;
-        finish(&c, result).await
+        let result = finish(&c, result).await?;
+        if let Some(task) = result["task"].as_str() {
+            self.announce_task(sid, task, "queued", "Waiting for matching worker");
+        }
+        Ok(result)
+    }
+    /// Live task progress for everyone viewing the series; the stored task stays authoritative.
+    fn announce_task(&self, sid: &str, task: &str, state: &str, progress: &str) {
+        self.announce(
+            super::Audience::Everyone,
+            json!({"resourceKind":"seriesTask","seriesId":sid,"taskId":task,"change":{"kind":"seriesTask","state":state,"progress":progress}}),
+        );
     }
     pub async fn trend_task(&self, task: &str) -> Result<Task> {
         let c = self.connect().await?;
@@ -374,6 +385,7 @@ impl Store {
                 ],
             )
             .await?;
+        self.announce_task(&task.series, &task.id, &task.state, &task.progress);
         Ok(())
     }
     pub async fn recover_trend_tasks(&self) -> Result<()> {
@@ -503,6 +515,8 @@ impl Store {
             Ok(result)
         }
         .await;
-        finish(&c, result).await
+        let result = finish(&c, result).await?;
+        self.announce_task(sid, tid, "applied", "Saved");
+        Ok(result)
     }
 }

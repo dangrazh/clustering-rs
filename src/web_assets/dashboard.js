@@ -1,7 +1,7 @@
 import { openReviewTarget } from "./target-navigation.js";
 import {state} from "./state.js";
 import {statusLabels} from "./workflow.js";
-import {json,post,node,empty,cell,dateCell,count,head,openButton,moreButton,listPanel,replaceList,searchInput,checkbox,select} from "./list-ui.js";
+import {json,post,node,empty,cell,dateCell,count,head,openButton,moreButton,listPanel,replaceList,searchInput,checkbox,select,menuGuard,DETAIL_CHANGES} from "./list-ui.js";
 // Quadrants in reading order: top left, top right, bottom left, bottom right.
 const quadrants=[["assigned","My assigned work"],["mine","My analyses"],["assignedAll","All assigned work"],["all","All analyses"]];
 export async function initializeDashboard(openAnalysis){
@@ -93,7 +93,10 @@ export async function initializeDashboard(openAnalysis){
     return result;
   }
   function render(){if(data){assignedList("assigned");analysisList("mine");assignedList("assignedAll");analysisList("all");}}
-  async function refresh(){if(!isVisible())return;if(busy){again=true;return;}busy=true;try{do{again=false;if(!dataDirty)break;dataDirty=false;try{const value=await fetchData();for(const [k] of quadrants)sections[k].error.textContent="";const next=JSON.stringify(value);if(next!==signature){data=value;signature=next;render();}}catch(e){dataDirty=true;for(const [k] of quadrants)sections[k].error.textContent=`Unable to refresh: ${e.message}`;}}while(again&&isVisible());}finally{busy=false;}}
+  async function refresh(){if(!isVisible())return;if(busy){again=true;return;}busy=true;try{do{again=false;if(!dataDirty)break;dataDirty=false;try{const value=await fetchData();for(const [k] of quadrants)sections[k].error.textContent="";const next=JSON.stringify(value);if(next!==signature){data=value;signature=next;guard.run(render);}}catch(e){dataDirty=true;for(const [k] of quadrants)sections[k].error.textContent=`Unable to refresh: ${e.message}`;}}while(again&&isVisible());}finally{busy=false;}}
+  // Every list here can change with an analysis, except through comments and column types.
+  const guard=menuGuard(document.getElementById("dashboard"));
+  window.addEventListener("app-change",e=>{const d=e.detail;if(d.resourceKind==="analysis"&&!DETAIL_CHANGES.has(d.change?.kind)){dataDirty=true;refresh();}});
   window.addEventListener("dashboard-refresh",()=>{dataDirty=true;refresh();});window.addEventListener("pane-change",e=>{if(e.detail==="dashboard"){dataDirty=true;setTimeout(refresh,0);}});document.addEventListener("visibilitychange",()=>{dataDirty=true;refresh();});
   setInterval(save,750);await refresh();
 }

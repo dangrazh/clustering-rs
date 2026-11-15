@@ -954,3 +954,84 @@ async fn static_data_join_deletion_and_catalog_views() -> Result<()> {
     assert!(tables.as_array().unwrap().is_empty());
     Ok(())
 }
+
+/// Reads one browser's change stream frame by frame.
+struct Changes {
+    response: reqwest::Response,
+    buffer: String,
+}
+impl Changes {
+    async fn open(client: &reqwest::Client, base: &str, token: &str, resume: Option<i64>) -> Result<Self> {
+        let mut request = client.get(format!("{base}/api/changes")).header(header::COOKIE, format!("app_session={token}"));
+        if let Some(sequence) = resume {
+            request = request.header("Last-Event-ID", sequence.to_string());
+        }
+        let response = request.send().await?.error_for_status()?;
+        Ok(Self { response, buffer: String::new() })
+    }
+    /// The next change, skipping the ready frame and heartbeats.
+    async fn next(&mut self) -> Result<Value> {
+        loop {
+            if let Some(end) = self.buffer.find("\n\n") {
+                let frame: String = self.buffer.drain(..end + 2).collect();
+                if frame.contains("event: ready") {
+                    continue;
+                }
+                if let Some(data) = frame.lines().find_map(|line| line.strip_prefix("data: ")) {
+                    return Ok(serde_json::from_str(data)?);
+                }
+                continue;
+            }
+            let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), self.response.chunk())
+                .await??
+                .context("Change stream ended")?;
+            self.buffer.push_str(std::str::from_utf8(&chunk)?);
+        }
+    }
+}
+
+#[tokio::test]
+async fn change_streams_share_one_feed_and_show_jobs_only_to_owners_and_admins() -> Result<()> {
+    let (dir, state, base, alice_token, bob_token) = fixture_mode(true).await?;
+    std::fs::write(
+        dir.path().join("allowed-users.json"),
+        r#"[{"email":"alice@example.invalid","name":"Alice"},{"email":"bob@example.invalid","name":"Bob","role":"SysAdmin"}]"#,
+    )?;
+    let store = state.inner.store.clone();
+    let alice = store.user("allowlist:alice@example.invalid", "Alice", "alice@example.invalid").await?;
+    let client = reqwest::Client::new();
+    let mut alice_changes = Changes::open(&client, &base, &alice_token, None).await?;
+    let mut bob_changes = Changes::open(&client, &base, &bob_token, None).await?;
+
+    // A job change goes to its owner and to SysAdmins only.
+    let job = |owner: &str, jid: &str| {
+        store.announce(
+            crate::storage::Audience::OwnerAndAdmins(owner.into()),
+            json!({"resourceKind":"job","jobId":jid,"change":{"kind":"job","state":"queued"}}),
+        )
+    };
+    job("someone-else", "job-other");
+    job(&alice.id, "job-alice");
+    assert_eq!(alice_changes.next().await?["jobId"], "job-alice");
+    assert_eq!(bob_changes.next().await?["jobId"], "job-other");
+    assert_eq!(bob_changes.next().await?["jobId"], "job-alice");
+
+    // Stored changes reach every open stream once published, with their sequence.
+    let review = ReviewData { analysis_id: id(), fingerprint: "stream-fixture".into(), annotations: Default::default() };
+    let aid = store
+        .create(&alice, &id(), "Stream fixture", "fixture.icas", crate::storage::InitialReview { review: &review, view: &ViewState::default(), metadata: &Default::default() })
+        .await?;
+    for changes in [&mut alice_changes, &mut bob_changes] {
+        let change = changes.next().await?;
+        assert_eq!((change["analysisId"].as_str(), change["change"]["kind"].as_str()), (Some(aid.as_str()), Some("catalog")));
+    }
+    let sequence = store.delivery_cursor().await?;
+
+    // A stream resuming from an earlier point first catches up from the stored log,
+    // then continues live without repeating it.
+    let mut resumed = Changes::open(&client, &base, &alice_token, Some(sequence - 1)).await?;
+    assert_eq!(resumed.next().await?["sequence"], sequence);
+    store.announce(crate::storage::Audience::Everyone, json!({"resourceKind":"maintenance","change":{"kind":"maintenance","paused":false}}));
+    assert_eq!(resumed.next().await?["resourceKind"], "maintenance");
+    Ok(())
+}

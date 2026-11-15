@@ -10,7 +10,13 @@ const bytes=n=>`${(Number(n)/1024/1024).toLocaleString(undefined,{maximumFractio
 export function initializeAdmin(role){
  state.role=role;document.body.dataset.role=role;
  const banner=el("p","","workflow-error");banner.setAttribute("role","status");document.querySelector("header").after(banner);
- setInterval(async()=>{try{const r=await globalThis.fetch("/api/maintenance");if(r.ok){const v=await r.json();banner.textContent=v.maintenance?"System maintenance: new work is paused. Keep this page open to retain unsaved drafts.":"";}}catch{}},3000);
+ // Maintenance starting or ending arrives as a change event. The state is read again whenever
+ // the change stream reconnects (after a restart) or is refused (while maintenance runs).
+ const showMaintenance=paused=>{banner.textContent=paused?"System maintenance: new work is paused. Keep this page open to retain unsaved drafts.":"";};
+ const checkMaintenance=async()=>{try{const r=await globalThis.fetch("/api/maintenance");if(r.ok)showMaintenance((await r.json()).maintenance);}catch{}};
+ window.addEventListener("app-change",e=>{if(e.detail.resourceKind==="maintenance")showMaintenance(e.detail.change.paused);});
+ window.addEventListener("dashboard-refresh",checkMaintenance);window.addEventListener("live-disconnected",checkMaintenance);
+ checkMaintenance();
  if(role==="Read Only User"){
   document.querySelector(".collaboration-bar").append(el("span","Read only — personal filters and views can still be saved."));
   const protect=()=>{document.querySelectorAll('#newAnalysis,#centralSave,#fileInput,#sessionInput,#startAnalysis,#source input,#mapping input,#mapping button,#analysis input,#analysis textarea,#analysis button,[data-step="source"],[data-step="mapping"],[data-step="analysis"],#workflowPanel input,#workflowPanel select,#workflowPanel textarea,#workflowPanel button,#editColumnTypes,#editLabel,#undoWorkflow,#inheritWorkflow,.comment-actions button').forEach(e=>{if(!e.disabled)e.disabled=true;});};

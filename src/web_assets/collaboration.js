@@ -42,7 +42,7 @@ export async function initializeCollaboration(){
   initializeSeries(openAnalysis);
   initializeCatalog(openAnalysis);
   initializeDashboard(openAnalysis).catch(error=>{document.getElementById("dashboardSave").textContent=`Dashboard unavailable: ${error.message}. Reload to retry.`;});
-  const events=new EventSource("/api/changes");let refreshing=false,refreshAgain=false;
+  let refreshing=false,refreshAgain=false;
   async function refreshShared(){
     if(refreshing){refreshAgain=true;return;}refreshing=true;
     try{
@@ -54,8 +54,21 @@ export async function initializeCollaboration(){
       }while(refreshAgain);
     }finally{refreshing=false;}
   }
-  events.onmessage=event=>{window.dispatchEvent(new Event("dashboard-refresh"));const data=JSON.parse(event.data);if(data.change?.kind==="deleteAnalysis"&&data.analysisId&&data.analysisId===state.analysisId){closeDeletedAnalysis(data.change.name);return;}if(data.change?.kind==="regenerateTitles"&&data.analysisId&&data.analysisId===state.analysisId){applyRegeneratedTitles(data.analysisId,data.change).catch(()=>{});return;}window.dispatchEvent(new CustomEvent("series-refresh",{detail:data}));if(data.analysisId&&data.analysisId===state.analysisId)refreshShared().catch(()=>{});};
-  events.onopen=()=>{window.dispatchEvent(new Event("dashboard-refresh"));refreshShared().catch(()=>{});};
+  // One change stream per tab. Each change goes to the panes as an "app-change" event and each
+  // pane picks what concerns it; "dashboard-refresh" asks every pane to reload, because changes
+  // may have been missed (on connecting, or when this tab fell behind).
+  let retry=null;
+  function connect(){
+    const events=new EventSource("/api/changes");
+    events.onmessage=handleChange;
+    events.onopen=()=>{window.dispatchEvent(new Event("dashboard-refresh"));refreshShared().catch(()=>{});};
+    events.addEventListener("resync",()=>{window.dispatchEvent(new Event("dashboard-refresh"));refreshShared().catch(()=>{});});
+    // The browser retries a lost connection by itself but gives up on an error response
+    // (maintenance or an ended sign-in), so retry those here.
+    events.onerror=()=>{window.dispatchEvent(new Event("live-disconnected"));if(events.readyState===EventSource.CLOSED&&!retry)retry=setTimeout(()=>{retry=null;connect();},5000);};
+  }
+  function handleChange(event){const data=JSON.parse(event.data);window.dispatchEvent(new CustomEvent("app-change",{detail:data}));if(data.resourceKind!=="analysis")return;if(data.change?.kind==="deleteAnalysis"&&data.analysisId&&data.analysisId===state.analysisId){closeDeletedAnalysis(data.change.name);return;}if(data.change?.kind==="regenerateTitles"&&data.analysisId&&data.analysisId===state.analysisId){applyRegeneratedTitles(data.analysisId,data.change).catch(()=>{});return;}if(data.analysisId&&data.analysisId===state.analysisId)refreshShared().catch(()=>{});}
+  connect();
   window.addEventListener("shared-save-state",renderSaveStatus);
   const presence=document.createElement("span");presence.id="analysisPresence";bar.append(presence);
   const jobsButton=document.createElement("button");jobsButton.textContent="My jobs";bar.append(jobsButton);

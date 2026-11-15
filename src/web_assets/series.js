@@ -3,6 +3,18 @@ import {request} from "./api.js";
 import {askDialog,noticeDialog,showStep} from "./ui.js";
 import {openReviewTarget} from "./target-navigation.js";
 import {renderBarChart} from "./series-chart.js";
+import {menuGuard,CATALOG_CHANGES} from "./list-ui.js";
+// Change events seen per matching task, so a wait that starts after a change returns at once.
+const taskChanges=new Map();
+// Resolves on the task's next change after `seen`, or after `ms` in case an event was missed.
+function nextTaskChange(taskId,seen,ms=10000){
+  return new Promise(resolve=>{
+    if((taskChanges.get(taskId)||0)!==seen)return resolve();
+    const done=()=>{clearTimeout(timer);window.removeEventListener("app-change",listen);window.removeEventListener("dashboard-refresh",done);resolve();};
+    const listen=e=>{if(e.detail.resourceKind==="seriesTask"&&e.detail.taskId===taskId)done();};
+    const timer=setTimeout(done,ms);window.addEventListener("app-change",listen);window.addEventListener("dashboard-refresh",done);
+  });
+}
 
 const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
 const post=value=>({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
@@ -66,8 +78,8 @@ export function changes(before,after){
 export function initializeSeries(openAnalysis){
   const root=document.getElementById("seriesRoot");if(!root)return;
   let current=null,active=false,busy=false,again=false,generation=0,rows=[],ranked=[],selected=new Set(),plotInitialized=false,percentage=false,weekly=null,weeklyError="";
-  let search="",archived=false,catalogOffset=null,taskTimer=null;
-  const catalog=el("div"),detail=el("div"),message=el("p",null,"job-metadata");message.setAttribute("role","status");const intro=el("div",null,"series-start dashboard-panel");
+  let search="",archived=false,catalogOffset=null,againLoud=false,shownSignature="",taskList=null,fillTasks=null;
+  const catalog=el("div"),detail=el("div"),message=el("p",null,"job-metadata"),guard=menuGuard(detail);message.setAttribute("role","status");const intro=el("div",null,"series-start dashboard-panel");
   intro.append(el("h3","Compare saved analyses across periods"),el("p","1. Save each analysis centrally.  2. Create or open a series.  3. Add a saved analysis, enter its dates, then follow the matching wizard."));
   const helpActions=el("div",null,"toolbar");helpActions.append(button("How to create a series",showSeriesGuide),editButton("Prepare or import an analysis",()=>prepareAnalysis()));intro.append(helpActions);
   root.append(intro,catalog,message,detail);
@@ -80,25 +92,39 @@ export function initializeSeries(openAnalysis){
   async function open(id){generation++;selected=new Set();plotInitialized=false;current={id,revision:-1};await refresh();}
   function deletedSeries(sid){
     if(current?.id!==sid)return;
-    generation++;current=null;rows=[];selected.clear();clearTimeout(taskTimer);detail.replaceChildren();
+    generation++;current=null;rows=[];selected.clear();guard.cancel();shownSignature="";detail.replaceChildren();
     document.querySelectorAll("dialog.series-dialog[open]").forEach(d=>d.close());
     message.textContent="Series permanently deleted. Its saved analyses are available to add to another series.";
   }
   async function command(action,expected=current?.revision,sid=current?.id){if(!current)return;if(sid!==current.id||expected!==current.revision)throw Error("Series changed while you were editing. Review the latest state and retry.");const result=await api(`/api/series/${current.id}/commands`,post({commandId:crypto.randomUUID(),expected,action}));if(result.task)message.textContent="Preparing comparison. When ready, choose Review proposal, then Save to series. Nothing is added until you confirm.";await refresh();await refreshCatalog();return result;}
-  async function refresh(){
-    if(!current)return;if(busy){again=true;return;}busy=true;const sid=current.id,token=generation;
+  // quiet: a change from elsewhere. It redraws only when something shown changed, and waits
+  // while a dropdown here is open. The person's own actions always redraw.
+  async function refresh({quiet=false}={}){
+    if(!current)return;if(busy){again=true;if(!quiet)againLoud=true;return;}busy=true;const sid=current.id,token=generation;
     try{
       const [s,tasks]=await Promise.all([api(`/api/series/${sid}`),api(`/api/series/${sid}/tasks`)]);let collected=[],offset=0;
       do{const page=await api(`/api/series/${sid}/trends?offset=${offset}`);if(page.revision!==s.revision){again=true;return;}collected.push(...page.rows);offset=page.nextOffset;}while(offset!=null);
       if(s.periods.length)await loadWeekly(sid);
       if(token!==generation||sid!==current?.id)return;
-      const scroll=detail.querySelector(".series-table-wrap")?.scrollLeft||0;
-      const expanded=new Set([...detail.querySelectorAll("details[open][data-key]")].map(n=>n.dataset.key));
-      current=s;rows=collected;ranked=rankRows(rows);if(!plotInitialized&&rows.length){selected=new Set(ranked.slice(0,6).map(r=>r.problem.id));plotInitialized=true;}
-      render(tasks);for(const d of detail.querySelectorAll("details[data-key]"))d.open=expanded.has(d.dataset.key);
-      const table=detail.querySelector(".series-table-wrap");if(table)table.scrollLeft=scroll;
-      clearTimeout(taskTimer);if(active&&tasks.some(t=>["running","queued"].includes(t.state)))taskTimer=setTimeout(()=>refresh().catch(report),1500);
-    }finally{busy=false;if(again){again=false;queueMicrotask(()=>refresh().catch(report));}}
+      const signature=JSON.stringify([s,collected,tasks,weekly,weeklyError]);
+      if(quiet&&signature===shownSignature)return;
+      const apply=()=>{
+        if(token!==generation)return;
+        const scroll=detail.querySelector(".series-table-wrap")?.scrollLeft||0;
+        const expanded=new Set([...detail.querySelectorAll("details[open][data-key]")].map(n=>n.dataset.key));
+        current=s;rows=collected;ranked=rankRows(rows);if(!plotInitialized&&rows.length){selected=new Set(ranked.slice(0,6).map(r=>r.problem.id));plotInitialized=true;}
+        render(tasks);for(const d of detail.querySelectorAll("details[data-key]"))d.open=expanded.has(d.dataset.key);
+        const table=detail.querySelector(".series-table-wrap");if(table)table.scrollLeft=scroll;
+        shownSignature=signature;
+      };
+      if(quiet)guard.run(apply);else{guard.cancel();apply();}
+    }finally{busy=false;if(again){const loud=againLoud;again=againLoud=false;queueMicrotask(()=>refresh({quiet:!loud}).catch(report));}}
+  }
+  // Task progress redraws only the task list, so the rest of the pane stays as it is.
+  async function refreshTasks(){
+    if(!current||!taskList?.isConnected)return;const sid=current.id,token=generation;
+    const tasks=await api(`/api/series/${sid}/tasks`);
+    if(token===generation&&sid===current?.id&&taskList.isConnected)fillTasks?.(tasks);
   }
   // Weekly counts by the chosen column, or by an "Opened"/"Opened at" column the server finds.
   async function loadWeekly(sid){
@@ -144,6 +170,7 @@ export function initializeSeries(openAnalysis){
       const dialog=body.closest("dialog");
       (async()=>{try{
         while(dialog.isConnected){
+          const seen=taskChanges.get(taskId)||0;
           const task=await api(`/api/series/${sid}/previews/${taskId}`);
           if(!dialog.isConnected)return;
           if(current?.id!==sid)throw Error("The selected series changed. Return to the series to continue.");
@@ -158,7 +185,7 @@ export function initializeSeries(openAnalysis){
             await api(`/api/series/${sid}/previews/${taskId}/apply`,post({commandId:`guided-${taskId}`}));
             applied=true;analysis=task.action?.analysis;dialog.close();break;
           }
-          await new Promise(resolve=>setTimeout(resolve,750));
+          await nextTaskChange(taskId,seen);
         }
       }catch(error){status.textContent=error.message;status.className="dashboard-error";dialog.querySelector('button[type="submit"]').textContent="Back to series";}})();
       return()=>false;
@@ -240,7 +267,7 @@ export function initializeSeries(openAnalysis){
     }));
     if(current.archived)detail.append(el("p","Archived series — restore to change links or periods.","job-metadata"));
     if(current.model&&!current.model.automatic)detail.append(el("p","Automatic linking awaits historical-data validation. Candidates are available for manual confirmation; similarity scores are not probabilities.","job-metadata"));
-    const taskList=el("div",null,"series-tasks");for(const t of tasks.filter(t=>t.state!=="applied").slice(0,8)){const row=el("div",null,"dashboard-row");row.append(el("span",`${t.state}: ${t.error||t.progress}`));if(["queued","running"].includes(t.state)&&t.action?.type==="addPeriod"&&edit())row.append(editButton("Continue setup",()=>guidedTask(t.id,sid,true,!!t.action.replace||current.periods.some(p=>p.start>t.action.start))));if(t.state==="preview"&&edit()){if(t.expected===current.revision)row.append(button(t.action?.type==="addPeriod"&&!t.action.replace?"Continue setup":"Review proposal",()=>t.action?.type==="addPeriod"&&!t.action.replace?guidedTask(t.id,sid,true,current.periods.some(p=>p.start>t.action.start)):preview(t)));else row.append(el("span","Stale — retry the original operation","job-metadata"));}if(edit()&&(t.state==="failed"||t.state==="preview"&&t.expected!==current.revision))row.append(editButton("Retry with current state",async()=>{await api(`/api/series/${sid}/tasks/${t.id}/retry`,post({commandId:crypto.randomUUID(),expected:revision}));await refresh();}));taskList.append(row);}detail.append(taskList);
+    taskList=el("div",null,"series-tasks");fillTasks=list=>{taskList.replaceChildren();for(const t of list.filter(t=>t.state!=="applied").slice(0,8)){const row=el("div",null,"dashboard-row");row.append(el("span",`${t.state}: ${t.error||t.progress}`));if(["queued","running"].includes(t.state)&&t.action?.type==="addPeriod"&&edit())row.append(editButton("Continue setup",()=>guidedTask(t.id,sid,true,!!t.action.replace||current.periods.some(p=>p.start>t.action.start))));if(t.state==="preview"&&edit()){if(t.expected===current.revision)row.append(button(t.action?.type==="addPeriod"&&!t.action.replace?"Continue setup":"Review proposal",()=>t.action?.type==="addPeriod"&&!t.action.replace?guidedTask(t.id,sid,true,current.periods.some(p=>p.start>t.action.start)):preview(t)));else row.append(el("span","Stale — retry the original operation","job-metadata"));}if(edit()&&(t.state==="failed"||t.state==="preview"&&t.expected!==current.revision))row.append(editButton("Retry with current state",async()=>{await api(`/api/series/${sid}/tasks/${t.id}/retry`,post({commandId:crypto.randomUUID(),expected:revision}));await refresh();}));taskList.append(row);}};fillTasks(tasks);detail.append(taskList);
     const periods=el("details");periods.dataset.key="periods";periods.append(el("summary",`Periods (${current.periods.length})`));for(const p of current.periods){const row=el("div",null,"dashboard-row");row.append(el("span",`${p.start} – ${p.end} · ${p.name} · ${p.total.toLocaleString()} processed records`));if(edit())row.append(editButton("Replace",()=>addPeriod(p)));periods.append(row);}detail.append(periods);
     if(current.periods.length===1)detail.append(el("p","Your first period is saved. Click Add saved analysis to add a second period and compare cluster counts.","series-next-step"));
     if(!current.periods.length){detail.append(el("p","Next: click Add saved analysis above, choose an analysis and its dates, then follow the matching wizard.","dashboard-empty"));return;}
@@ -311,9 +338,18 @@ export function initializeSeries(openAnalysis){
     review.append(reviewMore);appendReview();detail.append(review);
     detail.append(button("Change history",async()=>{const history=await api(`/api/series/${current.id}/history`);await modal("Recent series changes",body=>{body.append(el("p","Most recent 50 changes. Full audit history is retained centrally."));for(const h of history){const d=el("details");d.append(el("summary",`${new Date(h.time*1000).toLocaleString()} · ${h.actor.name} · ${h.command.action.type}`));const ul=el("ul");for(const change of changes(h.before,h.after))ul.append(el("li",change));if(!ul.childElementCount)ul.append(el("li",JSON.stringify(h.command.action)));d.append(ul);body.append(d);}return()=>true;});}));
   }
-  window.addEventListener("pane-change",e=>{active=e.detail==="series";if(active){refreshCatalog().catch(report);refresh().catch(report);}else clearTimeout(taskTimer);});
-  window.addEventListener("series-refresh",e=>{if(e.detail?.resourceKind!=="series")return;if(active)refreshCatalog().catch(report);if(e.detail.change.deleted){deletedSeries(e.detail.seriesId);return;}if(current?.id===e.detail.seriesId){if(e.detail.change.revision>current.revision)message.textContent="Shared changes received.";refresh().catch(report);}});
-  window.addEventListener("dashboard-refresh",()=>{if(active){refreshCatalog().catch(report);refresh().catch(report);}});
+  window.addEventListener("pane-change",e=>{active=e.detail==="series";if(active){refreshCatalog().catch(report);refresh().catch(report);}});
+  window.addEventListener("app-change",e=>{
+    const d=e.detail;
+    if(d.resourceKind==="seriesTask"){taskChanges.set(d.taskId,(taskChanges.get(d.taskId)||0)+1);if(current?.id===d.seriesId)refreshTasks().catch(report);return;}
+    // A member analysis renamed, archived, deleted or retitled changes what this series shows.
+    if(d.resourceKind==="analysis"){if(current&&(CATALOG_CHANGES.has(d.change?.kind)||d.change?.kind==="rename")&&current.periods?.some(p=>p.analysis===d.analysisId))refresh({quiet:true}).catch(report);return;}
+    if(d.resourceKind!=="series")return;
+    if(active)refreshCatalog().catch(report);
+    if(d.change.deleted){deletedSeries(d.seriesId);return;}
+    if(current?.id===d.seriesId){if(d.change.revision>current.revision)message.textContent="Shared changes received.";refresh({quiet:true}).catch(report);}
+  });
+  window.addEventListener("dashboard-refresh",()=>{if(active){refreshCatalog().catch(report);refresh({quiet:true}).catch(report);}});
 }
 
 function editButton(text,action){const b=button(text,()=>{if(state.role==="Read Only User")return;return action();});b.disabled=state.role==="Read Only User";return b;}

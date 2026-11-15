@@ -43,8 +43,8 @@ try {
  assert.equal(await reader.page.locator('#centralSave').isDisabled(),true);
  const denied=await reader.page.evaluate(async()=>{const me=await fetch('/api/me').then(r=>r.json());return (await fetch('/api/analyze',{method:'POST',headers:{'X-CSRF-Token':me.csrf,'Content-Type':'application/json'},body:'{}'})).status;});assert.equal(denied,403);
  const data=await reader.page.evaluate(()=>fetch('/api/analyses').then(r=>r.json()));assert.equal(data.length,2);
- await reader.page.getByRole('button',{name:'Analyses',exact:true}).click();
- await reader.page.locator('#analysisLibrary').getByRole('button',{name:'Migration A',exact:true}).click();
+ await reader.page.locator('[data-step="catalog"]').click();
+ await reader.page.locator('.dashboard-list[data-list=catalogAnalyses]').getByRole('button',{name:'Migration A',exact:true}).click();
  await reader.page.locator('#results.active').waitFor();
  assert.equal(await reader.page.locator('#editColumnTypes').isDisabled(),true);
  await reader.page.locator('[data-workflow-key]').first().click();

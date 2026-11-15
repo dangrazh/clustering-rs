@@ -81,6 +81,13 @@ pub struct Job {
     pub expires: Option<i64>,
     pub error: Option<String>,
 }
+/// Tells the job's owner and SysAdmins that it changed, so their job lists refresh.
+fn announce(store: &Store, owner: &str, jid: &str, state: &str) {
+    store.announce(
+        crate::storage::Audience::OwnerAndAdmins(owner.to_owned()),
+        serde_json::json!({"resourceKind":"job","jobId":jid,"change":{"kind":"job","state":state}}),
+    );
+}
 pub async fn enqueue(store: &Arc<Store>, user: &User, input: Input) -> Result<String> {
     let metadata = serde_json::json!({"summary": source_summary(&input.source, None)});
     let job_id = format!("job-{}", id());
@@ -128,6 +135,7 @@ pub async fn enqueue(store: &Arc<Store>, user: &User, input: Input) -> Result<St
         ],
     )
     .await?;
+    announce(store, &user.id, &job_id, "queued");
     Ok(job_id)
 }
 pub fn source_summary(source: &SourceTable, processed_rows: Option<usize>) -> serde_json::Value {
@@ -163,6 +171,7 @@ pub async fn save_summary(
         params![metadata.to_string(), jid],
     )
     .await?;
+    announce(store, &job.owner, jid, &job.state);
     Ok(metadata)
 }
 pub async fn list(store: &Store, owner: &str) -> Result<Vec<Job>> {
@@ -224,7 +233,13 @@ pub async fn change(
     } else {
         None
     };
-    Ok(c.execute("UPDATE jobs SET state=?,artifact=COALESCE(?,artifact),error=?,expires=? WHERE id=? AND state=?",params![to,artifact,error,expires,jid,from]).await?!=0)
+    let changed = c.execute("UPDATE jobs SET state=?,artifact=COALESCE(?,artifact),error=?,expires=? WHERE id=? AND state=?",params![to,artifact,error,expires,jid,from]).await?!=0;
+    if changed
+        && let Some(row) = c.query("SELECT owner FROM jobs WHERE id=?", [jid]).await?.next().await?
+    {
+        announce(store, &row.get::<String>(0)?, jid, to);
+    }
+    Ok(changed)
 }
 pub async fn list_all(store: &Store) -> Result<Vec<Job>> {
     let c = store.connect().await?;
@@ -250,6 +265,7 @@ pub async fn cancel(store: &Store, user: &User, admin: bool, jid: &str) -> Resul
     let _p = store.writers.acquire().await?;
     let c = store.connect().await?;
     ensure!(c.execute("UPDATE jobs SET state='cancelled',error=?,expires=? WHERE id=? AND owner=? AND state IN ('queued','running')",params![reason,now()+retention_seconds()?,jid,job.owner.clone()]).await?!=0,"Job finished before cancellation");
+    announce(store, &job.owner, jid, "cancelled");
     Ok(())
 }
 pub async fn interrupted(store: &Store) -> Result<()> {
@@ -263,6 +279,7 @@ pub async fn retain_import(store: &Store, user: &User, jid: &str, artifact: &str
     let _p = store.writers.acquire().await?;
     let c = store.connect().await?;
     c.execute("INSERT INTO jobs(id,owner,state,artifact,metadata,created,expires) VALUES(?,?,'finished',?,'{\"imported\":true}',?,?)",params![jid,user.id.clone(),artifact,chrono::Utc::now().timestamp_millis(),now()+retention_seconds()?]).await?;
+    announce(store, &user.id, jid, "finished");
     Ok(())
 }
 pub fn worker(input: &Path, output: &Path) -> Result<()> {

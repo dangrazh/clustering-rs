@@ -4,7 +4,7 @@ import {loadResult} from "./results.js";
 import {listenForProgress} from "./analysis.js";
 import {askDialog,noticeDialog,showStep,showBusy,hideOverlay} from "./ui.js";
 import {jobSummaryText,jobAction} from "./jobs-view.js";
-import {json,post,node,empty,cell,dateCell,shortDate,head,openButton,moreButton,actionButton,listPanel,replaceList,searchInput,checkbox} from "./list-ui.js";
+import {json,post,node,empty,cell,dateCell,shortDate,head,openButton,moreButton,actionButton,listPanel,replaceList,searchInput,checkbox,menuGuard,CATALOG_CHANGES} from "./list-ui.js";
 
 const readOnly=()=>state.role==="Read Only User";
 // The open analysis was deleted: drop it so nothing can be saved back. Viewers of its
@@ -20,14 +20,15 @@ export function initializeCatalog(openAnalysis){
   const grid=document.getElementById("catalogGrid");if(!grid)return;
   const analyses=listPanel("catalogAnalyses","Analyses"),jobs=listPanel("catalogJobs","Jobs");grid.append(analyses.panel,jobs.panel);
   const filter={search:"",archived:false},jobFilter={all:true};let data=null,jobData=null,limit=200,busy=false,again=false;
-  // The pane polls every few seconds. Rebuilding a list replaces its controls, which closes an
-  // open Actions menu, so a list is rebuilt only when its data changed and never while a menu
-  // in it is in use; the deferred rebuild runs once the menu loses focus.
-  let shownAnalyses="",shownJobs="",deferred=false;
-  const menuInUse=()=>document.activeElement?.tagName==="SELECT"&&analyses.list.contains(document.activeElement);
-  analyses.list.addEventListener("focusout",()=>{if(deferred)setTimeout(()=>{if(deferred&&!menuInUse()){deferred=false;renderAnalyses();}},0);});
-  function updateAnalyses(value){const text=JSON.stringify(value);if(text===shownAnalyses&&!deferred)return;data=value;shownAnalyses=text;if(menuInUse()){deferred=true;return;}deferred=false;renderAnalyses();}
-  function updateJobs(value){const text=JSON.stringify(value)+jobFilter.all;if(text===shownJobs)return;jobData=value;shownJobs=text;renderJobs();}
+  // A list is rebuilt only when its data changed, and never under an open Actions menu.
+  let shownAnalyses="",shownJobs="",expiryTimer=null;const analysesGuard=menuGuard(analyses.list);
+  function updateAnalyses(value){const text=JSON.stringify(value);if(text===shownAnalyses)return;data=value;shownAnalyses=text;analysesGuard.run(renderAnalyses);}
+  function updateJobs(value){
+    // Retained jobs leave the list when they expire, which no change event announces.
+    clearTimeout(expiryTimer);const expiry=Math.min(...value.map(j=>j.expires||Infinity));
+    if(Number.isFinite(expiry))expiryTimer=setTimeout(refresh,Math.min(Math.max(expiry*1000-Date.now(),0)+1000,2**31-1));
+    const text=JSON.stringify(value)+jobFilter.all;if(text===shownJobs)return;jobData=value;shownJobs=text;renderJobs();
+  }
   analyses.controls.append(searchInput("Search analyses","",value=>{filter.search=value;renderAnalyses();}),checkbox("Show archived",false,value=>{filter.archived=value;renderAnalyses();}));
   const isVisible=()=>document.getElementById("catalog").classList.contains("active")&&!document.hidden;
   function command(a,type,extra={}){return json(`/api/analyses/${a.id}/commands`,post({commandId:crypto.randomUUID(),target:"",expected:a.version,action:{type,...extra}}));}
@@ -118,6 +119,10 @@ export function initializeCatalog(openAnalysis){
     if(admin()&&!jobs.controls.childElementCount)jobs.controls.append(checkbox("Show all users' jobs",jobFilter.all,value=>{jobFilter.all=value;jobData=null;refresh();}));
     setTimeout(refresh,0);
   });
+  // Refreshed by change events instead of polling: job changes (the server sends each person
+  // only their own jobs, and SysAdmins everyone's) and analyses being added, renamed,
+  // archived, restored, deleted or retitled. "dashboard-refresh" means changes may have been missed.
+  window.addEventListener("app-change",e=>{const d=e.detail;if(d.resourceKind==="job"||d.resourceKind==="analysis"&&CATALOG_CHANGES.has(d.change?.kind))refresh();});
   window.addEventListener("dashboard-refresh",()=>refresh());
-  setInterval(refresh,3000);
+  document.addEventListener("visibilitychange",()=>refresh());
 }
