@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { effectiveWorkflow, workflowRows, stateMatches } from "../src/web_assets/workflow.js";
 import { captureView, restoreView } from "../src/web_assets/view-state.js";
-import { treeVisibleRows } from "../src/web_assets/results.js";
+import { detailFilterKey, treeVisibleRows } from "../src/web_assets/results.js";
 import { state } from "../src/web_assets/state.js";
 const run = {
-  source: { rows: [["Open"], ["Closed"], ["Open"], ["Open"]] },
-  processed_incidents: [0,1,2,3].map(source_row_index => ({ source_row_index })),
+  source: { headers: ["State"], row_count: 4 },
+  processed_row_indices: [0,1,2,3],
   clusters: [{ id: 1, incident_row_indices: [0,1,2], subgroups: [{ id:1, incident_row_indices:[0,1] }, { id:2, incident_row_indices:[2] }] }],
 };
 function review() { return { annotations: { revision:1, entries: { "1": { workflow: {status:"Reviewed"} }, "1:1": {workflow:null}, "1:2": {workflow:{status:"NoOpportunity"}} } } }; }
@@ -25,6 +25,8 @@ test("themes inherit, overrides stay independent, memberships form a union", () 
 test("workflow filters intersect detail filters and pivot drilldown", () => {
   state.analysis=run;state.review=review();state.workflowStates=["Reviewed"];
   state.detailColumnFilters=[{selected:["Open"],query:"",searchDeselected:false}];state.detailDrilldownRowIndices=[1,2,3];
+  // The server's answer for the "Open" filter: rows 0, 2 and 3.
+  state.rowData={filterKey:detailFilterKey(),match:new Set([0,2,3]),sortColumn:null,ranks:null,page:new Map(),valuesKey:null,values:[]};
   assert.deepEqual([...treeVisibleRows()],[2]);
   state.workflowStates=["Review"];assert.deepEqual([...treeVisibleRows()],[]);
   state.workflowStates=[];assert.deepEqual([...treeVisibleRows()],[2,3]);

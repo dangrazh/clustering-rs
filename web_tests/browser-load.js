@@ -17,7 +17,7 @@ try {
   const elapsedMs = Math.round(performance.now() - started);
   const measurements = await page.evaluate(async () => {
     const {state} = await import('/state.js');
-    return {rows:state.analysis.source.rows.length,columns:state.analysis.source.headers.length,jsHeapBytes:performance.memory?.usedJSHeapSize};
+    return {rows:state.analysis.source.row_count,columns:state.analysis.source.headers.length,jsHeapBytes:performance.memory?.usedJSHeapSize};
   });
   expect(measurements.rows).toBe(150000); expect(measurements.columns).toBe(30);
   expect(errors).toEqual([]);

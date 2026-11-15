@@ -1,26 +1,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { filteredIncidentCount, pivotCellFilters, treeVisibleRows } from "../src/web_assets/results.js";
+import { detailFilterKey, filteredIncidentCount, pivotCellFilters, treeVisibleRows } from "../src/web_assets/results.js";
 import { state } from "../src/web_assets/state.js";
 
 function setResultState() {
   state.analysis = {
-    processed_incidents: [0, 1, 2, 3].map((source_row_index) => ({ source_row_index })),
-    source: {
-      rows: [
-        ["Open", "Zurich"],
-        ["Closed", "Zurich"],
-        ["Open", "Bern"],
-        ["Open", "Zurich"],
-      ],
-    },
+    processed_row_indices: [0, 1, 2, 3],
+    source: { headers: ["State", "Site"], row_count: 4 },
   };
+  state.rowData = null;
   state.detailColumnFilters = [
     { selected: null, query: "", searchDeselected: false },
     { selected: null, query: "", searchDeselected: false },
   ];
   state.detailDrilldownRowIndices = null;
+}
+
+// Row text lives on the server; this stands in for its answer to the current column filters.
+const rows = [
+  ["Open", "Zurich"],
+  ["Closed", "Zurich"],
+  ["Open", "Bern"],
+  ["Open", "Zurich"],
+];
+function serverMatched() {
+  const filters = JSON.parse(detailFilterKey());
+  const match = rows.flatMap((row, index) => (filters.every((f) => f.selected.includes(row[f.column])) ? [index] : []));
+  state.rowData = { filterKey: detailFilterKey(), match: new Set(match), sortColumn: null, ranks: null, page: new Map(), valuesKey: null, values: [] };
 }
 
 test.beforeEach(setResultState);
@@ -31,6 +38,7 @@ test("tree rows are unrestricted when no detail constraint is active", () => {
 
 test("tree rows apply detail filters across all processed records", () => {
   state.detailColumnFilters[0].selected = ["Open"];
+  serverMatched();
 
   const visibleRows = treeVisibleRows();
 
@@ -43,8 +51,17 @@ test("tree rows combine detail filters with pivot drilldown rows", () => {
   state.detailColumnFilters[0].selected = ["Open"];
   state.detailColumnFilters[1].selected = ["Zurich"];
   state.detailDrilldownRowIndices = [1, 3];
+  serverMatched();
 
   assert.deepEqual([...treeVisibleRows()], [3]);
+});
+
+test("no row counts as matching until the server answered for the current filters", () => {
+  state.detailColumnFilters[0].selected = ["Open"];
+  assert.deepEqual([...treeVisibleRows()], []);
+  serverMatched();
+  state.detailColumnFilters[0].selected = ["Closed"];
+  assert.deepEqual([...treeVisibleRows()], []);
 });
 
 test("row-only pivot values create row filters", () => {
@@ -99,6 +116,7 @@ test("reviewer selection intersects column and drilldown filters", () => {
   state.reviewerFilter = { selected: true, users: ["bob"] };
   state.workflowStates = [];
   state.detailColumnFilters[1] = { selected: ["Zurich"], query: "", searchDeselected: false };
+  serverMatched();
   assert.deepEqual([...treeVisibleRows()], [3]);
   state.detailDrilldownRowIndices = [2];
   assert.equal(treeVisibleRows().size, 0);

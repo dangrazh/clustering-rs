@@ -900,10 +900,27 @@ async fn static_data_join_deletion_and_catalog_views() -> Result<()> {
     assert_eq!(result["static_columns"], 2);
     let headers = result["source"]["headers"].as_array().unwrap();
     assert_eq!(headers[headers.len() - 2..], [json!("Manager"), json!("Since")]);
-    let joined: Vec<_> = result["source"]["rows"].as_array().unwrap()[..3]
+    // The result describes the analysis; row text, joined columns included, is asked for by page.
+    assert!(result["source"].get("rows").is_none());
+    assert_eq!(result["source"]["row_count"], 20);
+    let page: Value = post(&client, &format!("{base}/api/analyses/{aid}/rows"), &bob, &b.csrf, json!({"query":"page","rowIndices":[0, 1, 2]}))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let joined: Vec<_> = page["rows"].as_array().unwrap()
         .iter()
         .map(|r| r.as_array().unwrap()[4..].to_vec())
         .collect();
+    // Joined columns are filtered on the server like the analysis' own.
+    let manager = headers.len() - 2;
+    let matched: Value = post(&client, &format!("{base}/api/analyses/{aid}/rows"), &bob, &b.csrf, json!({"query":"match","filters":[{"column":manager,"selected":["Ana"]}]}))
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(matched["rowIndices"].as_array().unwrap().contains(&json!(0)));
+    assert!(!matched["rowIndices"].as_array().unwrap().contains(&json!(1)));
     assert_eq!(joined, [vec![json!("Ana"), json!("2026-02-01")], vec![json!("Ben"), json!("2026-03-04")], vec![json!(""), json!("")]]);
     assert_eq!(result["column_types"].as_array().unwrap().len(), headers.len());
 

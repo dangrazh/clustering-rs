@@ -1,8 +1,8 @@
-import {filterValue,editColumnTypes} from "./columns.js";
+import {editColumnTypes} from "./columns.js";
 import { reviewerRows, reviewerLabel, bindReviewerFilter } from "./reviewers.js";
 import { captureView, restoreView, labelMatches, clearResultsFilters } from "./view-state.js";
 import { bindWorkflow, openWorkflow, renderWorkflow, renderSaveStatus, applyReviewResponse, effectiveWorkflow, selectionKey, statusLabels, stateMatches, workflowRows, displayLabel } from "./workflow.js";
-import { exportClusterViewExcel, exportExcel, exportPivotExcel, fetchPivot, fetchResult, restoreSession, fetchReview, saveSession } from "./api.js";
+import { exportClusterViewExcel, exportExcel, exportPivotExcel, fetchPivot, fetchResult, fetchRows, restoreSession, fetchReview, saveSession } from "./api.js";
 import { state } from "./state.js";
 import { hideOverlay, setStatus, showBusy, showError, showStep, statsHtml } from "./ui.js";
 import { clusterId, clusterKey, escapeHtml, sameSelection } from "./utils.js";
@@ -32,13 +32,14 @@ export function bindResultsEvents() {
     });
   });
   document.getElementById("exportExcel").addEventListener("click", () => {
-    if (state.jobId) saving("Exporting incidents", () => exportExcel(state.jobId, visibleDetailRowIndices()));
+    if (state.jobId) saving("Exporting incidents", async () => { await ensureRowData(); await exportExcel(state.jobId, visibleDetailRowIndices()); });
   });
 
   document.getElementById("exportClusterView").addEventListener("click", async () => {
     if (!state.jobId || !state.analysis) return;
     showBusy("Exporting cluster view", "Preparing the cluster tree Excel export.");
     try {
+      await ensureRowData();
       await exportClusterViewExcel(state.jobId, {
         drilldownRowIndices: treeVisibleRows() ? [...treeVisibleRows()] : null,
         workflowStates: state.workflowStates,
@@ -59,6 +60,7 @@ export function bindResultsEvents() {
     }
     showBusy("Exporting pivot", "Preparing the pivot Excel export.");
     try {
+      await ensureRowData();
       await exportPivotExcel(state.jobId, visibleDetailRowIndices(), state.pivotRows, state.pivotColumns);
       setStatus("Pivot export prepared.");
       setTimeout(hideOverlay, 600);
@@ -120,6 +122,9 @@ export async function loadResult(jobId) {
   const [run, metadata] = await Promise.all([fetchResult(jobId), fetchReview(jobId)]);
   if(generation !== loadGeneration || epoch !== navigationEpoch) return false;
   initializeResult(run, jobId, metadata);
+  // A restored view may filter or sort: have those rows before anything reads the view.
+  await ensureRowData();
+  if(generation !== loadGeneration || epoch !== navigationEpoch) return false;
   renderResults(); showStep("results");
   return true;
   } finally {if(generation === loadGeneration) state.loadingAnalysis=false;}
@@ -132,6 +137,7 @@ export async function loadSavedSession(file) {
 function initializeResult(run, jobId, metadata) {
   normalizeRunSettings(run);
   state.analysis = run;
+  state.rowData = emptyRowData();
   state.source = null;
   state.mapping = run.mapping || null;
   state.settings = run.settings || state.settings;
@@ -175,7 +181,7 @@ export function renderResults(preserveEditor = false) {
   applyResultsPaneWidth();
   document.getElementById("resultStats").innerHTML = statsHtml([
     ["Clusters", run.clusters.filter(c=>c.id!==0).length],
-    ["Processed", run.processed_incidents.length],
+    ["Processed", run.processed_row_indices.length],
     ["Ignored", run.ignored_rows.length],
     ["Unclustered", run.unclustered_row_indices.length],
   ]);
@@ -191,6 +197,12 @@ function syncDetailScrollbar(){
   top.hidden=table.scrollWidth<=table.clientWidth;top.scrollLeft=table.scrollLeft;
 }
 function renderClusterList() {
+  if (rowDataReady()) return drawClusterList();
+  const run = state.analysis;
+  ensureRowData().then(ready => { if (ready && state.analysis === run) drawClusterList(); }, reportRowError);
+}
+
+function drawClusterList() {
   document.getElementById("treeLabelFilter").value=state.treeLabelFilter||"";
   const list = document.getElementById("clusterList");
   const visibleRows = treeVisibleRows();
@@ -272,8 +284,7 @@ export function treeVisibleRows() {
   const hasDrilldown = Array.isArray(state.detailDrilldownRowIndices);
   if (!run || (!hasColumnFilters && !hasDrilldown && !state.workflowStates.length && !state.reviewerFilter?.selected)) return null;
 
-  let rowIndices = run.processed_incidents.map((record) => record.source_row_index);
-  rowIndices = applyDetailFilters(rowIndices, run.source.rows);
+  let rowIndices = applyDetailFilters(run.processed_row_indices);
   rowIndices = applyDetailDrilldown(rowIndices);
   const reviewers = reviewerRows(state);
   if (reviewers) rowIndices = rowIndices.filter(row => reviewers.has(row));
@@ -321,17 +332,157 @@ function workflowBadge(selection) {
   return badge;
 }
 
-function renderDetailRows(focusFilterColumn = null, focusTarget = "search") {
-  const run = state.analysis;
-  syncDetailColumnState(run.source.headers.length);
+// ---- Row data held by the server ----
+// The browser knows which rows belong to which cluster and theme, but not what they say.
+// It asks the server for the rows matching the column filters, the sort rank of each row,
+// the text of the visible page and the values offered by the open filter menu, and keeps
+// the answers here until the view changes. Everything that reads the view stays synchronous.
+function emptyRowData() {
+  return { filterKey: "[]", match: null, sortColumn: null, ranks: null, page: new Map(), valuesKey: null, values: [] };
+}
+
+function rowData() {
+  return (state.rowData ||= emptyRowData());
+}
+
+function activeFilters(except = null) {
+  return (state.detailColumnFilters || []).flatMap((filter, column) =>
+    Array.isArray(filter?.selected) && column !== except
+      ? [{
+          column,
+          selected: filter.selected.map(detailCellValue),
+          mode: state.dateFilterModes?.[column] || "exact",
+          columnType: state.analysis?.column_types?.[column] || null,
+        }]
+      : []
+  );
+}
+
+// Identifies the column filters the matching rows were asked for.
+export function detailFilterKey() {
+  return JSON.stringify(activeFilters());
+}
+
+function sortColumn() {
+  const sort = state.detailSort;
+  return sort && sort.direction !== "none" ? sort.column : null;
+}
+
+function rowDataReady() {
+  const data = rowData(), column = sortColumn();
+  return data.filterKey === detailFilterKey() && (column == null || data.sortColumn === column);
+}
+
+let rowLoad = null;
+// Resolves once the matching rows and sort ranks fit the current view; false if another
+// analysis was opened meanwhile.
+export function ensureRowData() {
+  if (!state.analysis || rowDataReady()) return Promise.resolve(!!state.analysis);
+  return (rowLoad ||= loadRowData().finally(() => { rowLoad = null; }));
+}
+
+async function loadRowData() {
+  for (;;) {
+    const run = state.analysis, jobId = state.jobId, data = rowData(), key = detailFilterKey(), column = sortColumn();
+    if (data.filterKey !== key) {
+      const filters = activeFilters();
+      const match = filters.length ? new Set((await fetchRows(jobId, { query: "match", filters })).rowIndices) : null;
+      if (state.analysis !== run) return false;
+      data.match = match;
+      data.filterKey = key;
+    } else if (column != null && data.sortColumn !== column) {
+      const { ranks } = await fetchRows(jobId, { query: "order", column });
+      if (state.analysis !== run) return false;
+      const byRow = [];
+      run.processed_row_indices.forEach((row, position) => { byRow[row] = ranks[position]; });
+      data.ranks = byRow;
+      data.sortColumn = column;
+    } else {
+      return true;
+    }
+    // The view may have changed while the server answered: check again.
+  }
+}
+
+function detailPage() {
   const rowIndices = visibleDetailRowIndices();
   const totalRows = rowIndices.length;
   const pageSize = state.detailPageSize;
   const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
   state.detailPage = Math.min(Math.max(1, state.detailPage), totalPages);
   const start = (state.detailPage - 1) * pageSize;
-  const pageRows = rowIndices.slice(start, start + pageSize);
-  const rows = pageRows.map((index) => run.source.rows[index]).filter(Boolean);
+  return { totalRows, totalPages, start, pageRows: rowIndices.slice(start, start + pageSize) };
+}
+
+// The values of the open filter menu's column: among the selected cluster or theme, for
+// rows passing the other columns' filters.
+function valuesQuery() {
+  const column = state.detailOpenFilterColumn;
+  if (column == null || !state.analysis) return null;
+  const query = {
+    query: "values",
+    column,
+    mode: state.dateFilterModes?.[column] || "exact",
+    columnType: state.analysis.column_types?.[column] || null,
+    filters: activeFilters(column),
+  };
+  if (state.selection?.type === "cluster" || state.selection?.type === "theme") query.cluster = state.selection.cluster;
+  if (state.selection?.type === "theme") query.theme = state.selection.theme;
+  return query;
+}
+
+function detailDataReady() {
+  if (!rowDataReady()) return false;
+  const data = rowData(), query = valuesQuery();
+  return detailPage().pageRows.every((row) => data.page.has(row)) && (!query || data.valuesKey === JSON.stringify(query));
+}
+
+async function loadDetailData() {
+  const run = state.analysis, jobId = state.jobId;
+  if (!(await ensureRowData())) return false;
+  const data = rowData(), { pageRows } = detailPage();
+  const missing = pageRows.filter((row) => !data.page.has(row));
+  const query = valuesQuery(), valuesKey = query && JSON.stringify(query);
+  const [page, values] = await Promise.all([
+    missing.length ? fetchRows(jobId, { query: "page", rowIndices: missing }) : null,
+    query && data.valuesKey !== valuesKey ? fetchRows(jobId, query) : null,
+  ]);
+  if (state.analysis !== run) return false;
+  if (page) {
+    // Only the visible page is kept.
+    const kept = new Map(pageRows.filter((row) => data.page.has(row)).map((row) => [row, data.page.get(row)]));
+    missing.forEach((row, position) => { if (page.rows[position]) kept.set(row, page.rows[position]); });
+    data.page = kept;
+  }
+  if (values) {
+    data.values = values.values;
+    data.valuesKey = valuesKey;
+  }
+  return true;
+}
+
+function reportRowError(error) {
+  setStatus(`Could not load records: ${error.message}`, true);
+}
+
+let detailRender = 0;
+function renderDetailRows(focusFilterColumn = null, focusTarget = "search") {
+  const run = state.analysis;
+  syncDetailColumnState(run.source.headers.length);
+  const render = ++detailRender;
+  if (detailDataReady()) return drawDetailRows(focusFilterColumn, focusTarget);
+  // A later render supersedes this one; its own data is already on the way.
+  loadDetailData().then(
+    (ready) => { if (ready && render === detailRender && state.analysis === run) drawDetailRows(focusFilterColumn, focusTarget); },
+    (error) => { if (render === detailRender) reportRowError(error); }
+  );
+}
+
+function drawDetailRows(focusFilterColumn, focusTarget) {
+  const run = state.analysis;
+  const { totalRows, totalPages, start, pageRows } = detailPage();
+  const page = rowData().page;
+  const rows = pageRows.map((index) => page.get(index)).filter(Boolean);
   renderResultsTable("detailTable", run.source.headers, rows);
   requestAnimationFrame(syncDetailScrollbar);
   if (focusFilterColumn != null) restoreFilterFocus(focusFilterColumn, focusTarget);
@@ -343,7 +494,7 @@ function renderDetailRows(focusFilterColumn = null, focusTarget = "search") {
 function detailRowIndices() {
   const run = state.analysis;
   if (!run) return [];
-  let rowIndices = run.processed_incidents.map((record) => record.source_row_index);
+  let rowIndices = run.processed_row_indices;
   if (state.selection?.type === "cluster") {
     const cluster = run.clusters.find((item) => item.id === state.selection.cluster);
     rowIndices = cluster?.incident_row_indices || [];
@@ -360,24 +511,22 @@ function visibleDetailRowIndices() {
   const run = state.analysis;
   if (!run) return [];
   let rowIndices = detailRowIndices();
-  rowIndices = applyDetailFilters(rowIndices, run.source.rows);
+  rowIndices = applyDetailFilters(rowIndices);
   rowIndices = applyDetailDrilldown(rowIndices);
   const reviewers = reviewerRows(state);
   if (reviewers) rowIndices = rowIndices.filter(row => reviewers.has(row));
   const workflow = workflowRows(run, state.review, state.workflowStates);
   if (workflow) rowIndices = rowIndices.filter(row => workflow.has(row));
-  return applyDetailSort(rowIndices, run.source.rows);
+  return applyDetailSort(rowIndices);
 }
 
-function applyDetailFilters(rowIndices, rows) {
-  const filters = state.detailColumnFilters
-    .map((filter, column) => ({ column, selectedValues: activeFilterValues(filter) }))
-    .filter((filter) => filter.selectedValues);
-  if (!filters.length) return rowIndices;
-  return rowIndices.filter((rowIndex) => {
-    const row = rows[rowIndex] || [];
-    return filters.every(({ column, selectedValues }) => selectedValues.has(columnFilterValue(row[column],column)));
-  });
+// Until the server has answered for the current filters, no row counts as matching: showing
+// or exporting nothing is safer than showing or exporting rows the filters exclude.
+function applyDetailFilters(rowIndices) {
+  if (!activeFilters().length) return rowIndices;
+  const data = rowData();
+  if (data.filterKey !== detailFilterKey() || !data.match) return [];
+  return rowIndices.filter((rowIndex) => data.match.has(rowIndex));
 }
 
 function applyDetailDrilldown(rowIndices) {
@@ -386,16 +535,14 @@ function applyDetailDrilldown(rowIndices) {
   return rowIndices.filter((rowIndex) => drilldownRows.has(rowIndex));
 }
 
-function applyDetailSort(rowIndices, rows) {
-  const sort = state.detailSort;
-  if (!sort || sort.direction === "none") return rowIndices;
-  const direction = sort.direction === "desc" ? -1 : 1;
-  return [...rowIndices].sort((leftIndex, rightIndex) => {
-    const left = rows[leftIndex]?.[sort.column] ?? "";
-    const right = rows[rightIndex]?.[sort.column] ?? "";
-    const comparison = compareDetailValues(left, right);
-    return comparison === 0 ? leftIndex - rightIndex : comparison * direction;
-  });
+// Rows with equal values share a rank and keep their source order in either direction.
+function applyDetailSort(rowIndices) {
+  const column = sortColumn(), data = rowData();
+  if (column == null || data.sortColumn !== column) return rowIndices;
+  const direction = state.detailSort.direction === "desc" ? -1 : 1, ranks = data.ranks;
+  return [...rowIndices].sort(
+    (leftIndex, rightIndex) => ((ranks[leftIndex] ?? 0) - (ranks[rightIndex] ?? 0)) * direction || leftIndex - rightIndex
+  );
 }
 
 function compareDetailValues(left, right) {
@@ -862,26 +1009,10 @@ function detailFilterLabel(value) {
   return value === "" ? "(blank)" : value;
 }
 
-function columnFilterValue(value,column){return filterValue(detailCellValue(value),state.analysis?.column_types?.[column],state.dateFilterModes?.[column]||"exact");}
+// Values of the open filter menu's column, sorted by the server.
 function detailFilterValues(column) {
-  const run = state.analysis;
-  if (!run) return [];
-  const rows = run.source.rows;
-  const rowIndices = applyDetailFiltersExcept(detailRowIndices(), rows, column);
-  const values = new Set();
-  rowIndices.forEach((rowIndex) => values.add(columnFilterValue(rows[rowIndex]?.[column],column)));
-  return [...values].sort(compareDetailValues);
-}
-
-function applyDetailFiltersExcept(rowIndices, rows, ignoredColumn) {
-  const filters = state.detailColumnFilters
-    .map((filter, column) => ({ column, selectedValues: activeFilterValues(filter) }))
-    .filter((filter) => filter.selectedValues && filter.column !== ignoredColumn);
-  if (!filters.length) return rowIndices;
-  return rowIndices.filter((rowIndex) => {
-    const row = rows[rowIndex] || [];
-    return filters.every(({ column, selectedValues }) => selectedValues.has(columnFilterValue(row[column],column)));
-  });
+  const query = valuesQuery(), data = rowData();
+  return query && query.column === column && data.valuesKey === JSON.stringify(query) ? data.values : [];
 }
 
 function detailSortLabel(column) {

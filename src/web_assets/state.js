@@ -35,4 +35,6 @@ export const state = {
   currentPivotRows: [],
   selectedPivotRowIndices: null,
   selectedPivotRowLabel: "",
+  // What the server has told this view about its rows; see results.js.
+  rowData: null,
 };

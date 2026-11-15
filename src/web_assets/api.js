@@ -88,6 +88,16 @@ export async function fetchResult(jobId) {
   return jsonOrThrow(response);
 }
 
+// Row text stays on the server: matching rows, sort ranks, one page of text, filter values.
+export async function fetchRows(jobId, query) {
+  const response = await fetch(`/api/jobs/${jobId}/rows`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(query),
+  });
+  return jsonOrThrow(response);
+}
+
 export async function restoreSession(file) {
   const response = await fetch("/api/sessions", {
     method: "POST",

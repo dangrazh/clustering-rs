@@ -31,7 +31,7 @@ Uses **GPUI** (`gpui` + `gpui-component` crates) — *not* egui/eframe despite w
 - **`worker`** — Spawns the analysis pipeline on a background thread. Sends `WorkerMessage` (Started/Progress/Finished) over `mpsc::channel`. The GUI polls via `poll_worker` called each frame during `render()`.
 - **`schema`** — Column mapping logic: `suggest_mapping` auto-detects common ServiceNow column names, `validate_mapping` checks required fields, `build_records` converts `SourceTable` rows into `IncidentRecord`s and `IgnoredRow`s. Parallel via rayon.
 - **`text`** — Text normalization, tokenization, stopword filtering (EN/DE/FR/IT), word bigrams, character 4-grams, sparse TF-IDF feature extraction. All deterministic and offline.
-- **`clustering`** — Inverted-index candidate generation → Jaccard similarity → union-find connected components → minimum-size promotion → subgroup re-clustering within primary clusters. Parallelized with rayon. Key constants: `MAX_TERM_DOC_FREQUENCY` (2000), `MAX_SUBGROUP_RECLUSTER_SIZE` (5000).
+- **`clustering`** — `SimilarityIndex` (IDF-weighted term sets, built once) → candidate pairs from each incident's rarest terms → weighted Jaccard → lock-free union-find connected components → cohesion check (mixed groups are split at tighter thresholds until nearly all members match the group's core; leftovers join the best-matching cluster) → minimum-size promotion → themes as tighter groups within each cluster (same index, theme threshold). Every clustered incident is in exactly one theme; themes have a minimum size (a tenth of the minimum cluster size, at least 3), at most `MAX_THEMES` (10) per cluster, the last one collecting the remaining incidents. Parallelized with rayon. No term-frequency cap and no theme size limit.
 - **`labels`** — Generates sentence-style cluster summaries from top representative keywords.
 - **`model`** — All shared domain types: `SourceTable`, `ColumnMapping`, `IncidentRecord`, `Cluster`, `Subgroup`, `AnalysisRun`, `RunSettings`, `TextFeatures`, etc.
 - **`io`** — CSV import (via `csv`), XLSX import (via `calamine`), Excel export (via `rust_xlsxwriter`). Export adds Cluster ID/Label/Size and Theme ID/Label/Size columns.
@@ -48,9 +48,10 @@ File → import (io) → SourceTable → build_records (schema) → IncidentReco
 
 ### Key Design Decisions
 
-- **Similarity**: Jaccard on sparse TF-IDF vectors with inverted-index candidate generation (avoids O(n²)). Thresholds are user-configurable in the Run screen (`similarity_threshold_percent` default 42, `subgroup_similarity_threshold_percent` default 58).
-- **Clustering**: Union-find on similarity graph edges, then connected components promoted above minimum cluster size (default 50). No user-specified cluster count.
+- **Similarity**: Weighted Jaccard on term sets; a term weighs `ln(1 + N/df)²`, with df floored at the minimum cluster size, and terms containing digits (identifiers) at the minimum weight. Candidate generation indexes only each incident's rarest terms (exact prefix filter, avoids O(n²)). Thresholds are user-configurable in the Run screen (`similarity_threshold_percent` default 42, `subgroup_similarity_threshold_percent` default 58).
+- **Clustering**: Union-find on similarity graph edges, then a cohesion check so chains of loosely linked incidents do not become one cluster, then groups promoted above minimum cluster size (default 50). No user-specified cluster count. Output order and IDs are deterministic (size descending, then smallest source row).
 - **Filters**: Applied post-hoc to the result view, not to clustering itself. Stored as `BTreeMap<column_index, BTreeSet<selected_values>>`.
+- **Result delivery**: `/result` returns a summary without row text (headers, settings, clusters and themes with their row indices). The browser asks `POST …/rows` (`src/web/rows_api.rs`) for the rows matching its column filters, the sort ranks of a column, the text of the visible page and the values of a filter menu; the same queries serve temporary jobs and saved analyses, including joined static columns.
 - **Privacy**: No network calls, no telemetry, no logging of raw incident text by default.
 
 ## Coding Conventions

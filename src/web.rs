@@ -2,6 +2,7 @@ use crate::config::AppConfig;
 mod jobs_runtime;
 mod admin;
 mod review_api;
+mod rows_api;
 mod shared;
 mod static_api;
 #[cfg(test)]
@@ -537,6 +538,9 @@ async fn handle(request: Request<Incoming>, mut state: WebState) -> Result<Respo
         (Method::GET, path) if path.starts_with("/api/jobs/") && path.ends_with("/result") => {
             result_endpoint(path, state).await
         }
+        (Method::POST, path) if path.starts_with("/api/jobs/") && path.ends_with("/rows") => {
+            rows_endpoint(path, request, state).await
+        }
         (Method::POST, path)
             if path.starts_with("/api/jobs/") && path.ends_with("/cluster-view/export") =>
         {
@@ -855,7 +859,31 @@ async fn result_endpoint(path: &str, state: WebState) -> Result<Response<BoxBody
         .result
         .clone()
         .context("Analysis result is not ready.")?;
-    tokio::task::spawn_blocking(move || json_response(StatusCode::OK, analysis.as_ref())).await?
+    tokio::task::spawn_blocking(move || json_response(StatusCode::OK, &rows_api::summary(&analysis, 0))).await?
+}
+
+async fn rows_endpoint(
+    path: &str,
+    request: Request<Incoming>,
+    state: WebState,
+) -> Result<Response<BoxBody>> {
+    let id = path
+        .trim_start_matches("/api/jobs/")
+        .trim_end_matches("/rows");
+    let query: rows_api::Query = shared::body(request).await?;
+    let job = review_api::find_job(&state, id)?;
+    let analysis = job
+        .lock()
+        .expect("job state poisoned")
+        .result
+        .clone()
+        .context("Analysis result is not ready.")?;
+    rows_response(analysis, query).await
+}
+
+/// Answers a row query off the async runtime; the answer borrows the analysis until it is written.
+async fn rows_response(analysis: Arc<AnalysisRun>, query: rows_api::Query) -> Result<Response<BoxBody>> {
+    tokio::task::spawn_blocking(move || json_response(StatusCode::OK, &rows_api::answer(&analysis, query)?)).await?
 }
 
 async fn pivot_endpoint(

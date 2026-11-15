@@ -9,6 +9,14 @@ pub(super) struct StaticState {
     uploads: Mutex<HashMap<String, Upload>>,
     /// Lookups keyed by the static data signature, so analyses load without re-reading tables.
     cache: tokio::sync::Mutex<Option<(String, Arc<Vec<Lookup>>)>>,
+    /// The analysis joined last, so paging through it does not repeat the join.
+    joined: Mutex<Option<Joined>>,
+}
+struct Joined {
+    source: Arc<crate::model::AnalysisRun>,
+    lookups: Arc<Vec<Lookup>>,
+    run: Arc<crate::model::AnalysisRun>,
+    added: usize,
 }
 struct Upload {
     owner: String,
@@ -42,6 +50,30 @@ pub(super) async fn enriched(
     })
     .await
     .map_err(Into::into)
+}
+/// [`enriched`] for requests that repeat on one analysis, such as paging through its rows:
+/// the join is kept until another analysis is asked for or the static data changes.
+pub(super) async fn enriched_cached(
+    state: &WebState,
+    run: &Arc<crate::model::AnalysisRun>,
+) -> Result<(Arc<crate::model::AnalysisRun>, usize)> {
+    let lookups = lookups(state).await?;
+    let joined = &state.inner.static_data.joined;
+    if let Some(kept) = joined.lock().unwrap().as_ref()
+        && Arc::ptr_eq(&kept.source, run)
+        && Arc::ptr_eq(&kept.lookups, &lookups)
+    {
+        return Ok((kept.run.clone(), kept.added));
+    }
+    let (enriched, added) = enriched(state, run).await?;
+    // An analysis no table applies to is served as it is and needs no copy kept.
+    *joined.lock().unwrap() = (added > 0).then(|| Joined {
+        source: run.clone(),
+        lookups,
+        run: enriched.clone(),
+        added,
+    });
+    Ok((enriched, added))
 }
 async fn lookups(state: &WebState) -> Result<Arc<Vec<Lookup>>> {
     let store = &state.inner.store;

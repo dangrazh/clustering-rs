@@ -533,22 +533,23 @@ pub(super) async fn route(
         (Method::GET, "result") => {
             let info = store.analysis(aid).await?;
             let artifact = state.inner.artifacts.load(&info.artifact).await?;
-            let (run, static_columns) = super::static_api::enriched(&state, &artifact.run).await?;
-            #[derive(Serialize)]
-            struct Enriched<'a> {
-                #[serde(flatten)]
-                run: &'a crate::model::AnalysisRun,
-                /// Trailing columns joined from static data; column types cover only the rest.
-                static_columns: usize,
-            }
+            let (run, static_columns) = super::static_api::enriched_cached(&state, &artifact.run).await?;
             let bytes = tokio::task::spawn_blocking(move || {
-                serde_json::to_vec(&Enriched { run: &run, static_columns })
+                serde_json::to_vec(&super::rows_api::summary(&run, static_columns))
             })
             .await??;
             Ok(Response::builder()
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::CACHE_CONTROL, "no-store")
                 .body(full_body(bytes))?)
+        }
+        (Method::POST, "rows") => {
+            let query: super::rows_api::Query = body(request).await?;
+            let info = store.analysis(aid).await?;
+            let artifact = state.inner.artifacts.load(&info.artifact).await?;
+            // Joined static columns can be filtered, sorted and shown like the analysis' own.
+            let (run, _) = super::static_api::enriched_cached(&state, &artifact.run).await?;
+            rows_response(run, query).await
         }
         (Method::POST, "commands") => {
             let cmd: Command = body(request).await?;
