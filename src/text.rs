@@ -18,6 +18,11 @@ impl TermIndex {
         }
     }
 
+    /// Every term with its ID, in no particular order.
+    pub fn terms(&self) -> impl Iterator<Item = (&str, TermId)> {
+        self.map.iter().map(|(term, id)| (term.as_str(), *id))
+    }
+
     fn get_or_insert(&mut self, term: String) -> TermId {
         let next = &mut self.next_id;
         *self.map.entry(term).or_insert_with(|| {
