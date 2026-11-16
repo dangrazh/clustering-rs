@@ -81,9 +81,45 @@
           <button id="startAnalysis" class="primary">Start Analysis</button>
         </div>
         <div class="settings">
-          <label>Minimum cluster size <input id="minimumClusterSize" type="number" min="2" step="1" /></label>
-          <label>Cluster threshold <input id="similarityThreshold" type="number" min="1" max="100" step="1" /></label>
-          <label>Theme threshold <input id="subgroupThreshold" type="number" min="1" max="100" step="1" /></label>
+          <label>
+            <span class="setting-name">Minimum cluster size
+              <span class="info">
+                <button type="button" class="info-icon" aria-label="About minimum cluster size" aria-describedby="minimumClusterSizeInfo">i</button>
+                <span id="minimumClusterSizeInfo" class="info-tip" role="tooltip">
+                  <strong>What it steers:</strong> the smallest number of similar incidents that forms a cluster. Smaller groups stay <em>Unclustered</em>. It also sets the minimum theme size (a tenth of this value, at least 3), and words found in fewer incidents than this get no extra weight for being rare.<br>
+                  <strong>Raise it:</strong> fewer, larger clusters covering the main recurring issues; more incidents end up Unclustered.<br>
+                  <strong>Lower it:</strong> more, smaller clusters that also capture niche issues; fewer incidents stay Unclustered.
+                </span>
+              </span>
+            </span>
+            <input id="minimumClusterSize" type="number" min="2" step="1" />
+          </label>
+          <label>
+            <span class="setting-name">Cluster threshold
+              <span class="info">
+                <button type="button" class="info-icon" aria-label="About cluster threshold" aria-describedby="similarityThresholdInfo">i</button>
+                <span id="similarityThresholdInfo" class="info-tip" role="tooltip">
+                  <strong>What it steers:</strong> how similar two incidents must be (1–100 %, weighted overlap of their words) to be linked into the same cluster. Default 42.<br>
+                  <strong>Raise it:</strong> stricter matching – tighter, more homogeneous clusters, but more incidents stay Unclustered and broad topics may split into several clusters.<br>
+                  <strong>Lower it:</strong> looser matching – broader clusters covering more incidents, with a higher risk of mixing unrelated issues.
+                </span>
+              </span>
+            </span>
+            <input id="similarityThreshold" type="number" min="1" max="100" step="1" />
+          </label>
+          <label>
+            <span class="setting-name">Theme threshold
+              <span class="info">
+                <button type="button" class="info-icon" aria-label="About theme threshold" aria-describedby="subgroupThresholdInfo">i</button>
+                <span id="subgroupThresholdInfo" class="info-tip" role="tooltip">
+                  <strong>What it steers:</strong> how similar incidents within a cluster must be (1–100 %) to form a theme, a tighter sub-group of the cluster. Default 58; keep it above the Cluster threshold. It does not change which incidents belong to a cluster.<br>
+                  <strong>Raise it:</strong> more specific themes; more incidents fall into the last theme, which collects the remaining incidents (at most 10 themes per cluster).<br>
+                  <strong>Lower it:</strong> fewer, broader themes that each hold more incidents.
+                </span>
+              </span>
+            </span>
+            <input id="subgroupThreshold" type="number" min="1" max="100" step="1" />
+          </label>
         </div>
         <h3>Label term priority</h3>
         <div class="term-policy">
